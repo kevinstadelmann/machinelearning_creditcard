@@ -1,0 +1,138 @@
+---
+title: "Machine learning models and credic card data"
+author:
+  - Students - 
+  - Professors - Mateo
+date: "Last edited `r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document:
+    toc: true
+    toc_float: 
+      collapsed: false 
+      smooth_scroll: false
+    toc_depth: 5
+    number_section: true 
+---
+
+<style type="text/css">
+
+body{ /* Normal  */
+      font-size: 12px;
+}
+code.r{
+  font-size: 11px;
+}
+pre {
+  font-size: 10px
+}
+td {  /* Table  */
+  font-size: 12px;
+}
+h1.title {
+  font-size: 32px;
+  font-weight: bold;
+  text-align: center;
+  color: #2A5A7A;
+  opacity: 0.8;
+}
+h4.author { 
+  font-size: 15px;
+  color: #468faf;
+  text-align: center;
+}
+h4.date { 
+  font-size: 16px;
+  font-family: "Times New Roman", Times, serif;
+  color: DarkRed;
+  text-align: center;
+}
+h1 { /* Header 1 */
+  font-size: 22px;
+  color: Black;
+  font-weight: bold;
+}
+h2 { /* Header 2 */
+    font-size: 18px;
+  color: Black;
+  font-weight: bold
+}
+h3 { /* Header 3 */
+  font-size: 15px;
+  color: Black;
+  font-weight: bold
+}
+
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load-packages, include=FALSE}
+library(ggplot2)
+library(tseries)               # for ts object, ADF test
+library(magrittr)
+library(data.table)
+library(dplyr)
+library(lubridate)
+
+```
+
+# Introduction
+
+# Data preparation
+
+
+```{r preparation1, include=FALSE}
+
+# load data
+df_app <- fread("data/application_record.csv", stringsAsFactors = TRUE)
+df_cc <- fread("data/credit_record_pivot.csv", stringsAsFactors = TRUE)
+
+```
+
+```{r preparation2, include=FALSE}
+
+# transform data
+df_joined <- inner_join(x = df_app, y = df_cc, by = "ID") %>%
+  mutate(ID = as.factor(ID),
+          CNT_CHILDREN = as.factor(CNT_CHILDREN),
+          CNT_FAM_MEMBERS = as.factor(CNT_FAM_MEMBERS),
+          age_years = as.numeric(round(DAYS_BIRTH * (-1) / 365.25), 0),        # instead of DAYS_BIRTH
+          work_years = as.numeric(round((DAYS_EMPLOYED * (-1) / 365.25), 0)),  # instead of DAYS_EMPLOYED,
+                                                                              # negative: Pensioner or                                                                                                     unemployed
+          FLAG_MOBIL = as.factor(FLAG_MOBIL),
+          FLAG_WORK_PHONE = as.factor(FLAG_WORK_PHONE),
+          FLAG_PHONE = as.factor(FLAG_PHONE),
+          FLAG_EMAIL = as.factor(FLAG_EMAIL),
+          past_0_29 = as.numeric(past_0_29),
+          past_30_59 = as.numeric(past_30_59),
+          past_60_89 = as.numeric(past_60_89),
+          past_90_119 = as.numeric(past_90_119),
+          past_120_149 = as.numeric(past_120_149),
+          past_150_plus = as.numeric(past_150_plus)
+  )
+
+# Change column names to lower case
+setnames(df_joined, tolower(names(df_joined)))
+
+```
+
+```{r preparation}
+print(head(df_joined))
+
+#past_0_29, past_30_59, past_60_89, past_90_119, past_120_149,past_150_plus -> set NA to 0
+df_joined[is.na(df_joined)] = 0
+
+# new column good or bad client
+df_joined$raiting <- 0
+#print(head(df_joined))
+
+#df_joined %>% mutate(raiting = (df_joined$past_60_89+df_joined$past_90_119+df_joined$past_120_149+df_joined$past_150_plus))
+#print(rowSums(df_joined[, c(past_60_89,past_90_119)]))
+#df_joined$raiting <- (df_joined$past_60_89+df_joined$past_90_119+df_joined$past_120_149+df_joined$past_150_plus) / df_joined$total_months
+df_joined$raiting <- as.numeric((df_joined$past_60_89+df_joined$past_90_119+df_joined$past_120_149+df_joined$past_150_plus))
+print(df_joined$raiting)
+
+write.csv(df_joined,"data/app_cc_record_join.csv", row.names = TRUE)
+```
