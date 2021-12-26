@@ -1,0 +1,176 @@
+---
+title: "ml_project_dataset_24months"
+author: "Jeanette Lee, Kevin Stadelmann, Marc Weber, Patricia Wellhöfer"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_document:
+    css: styles.css
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+    number_sections: true
+---
+
+# Introduction
+[ACTION NEEDED: FILL IN]
+
+Data Source: [link](https://www.kaggle.com/rikdifos/credit-card-approval-prediction)
+(last update: 20-03-24)
+
+```{r setup, include=TRUE, warning=FALSE, message=FALSE}
+library(magrittr)
+library(data.table)
+library(dplyr)
+library(lubridate)
+library(caret)
+library(knitr)
+
+opts_chunk$set(fig.align="center", echo=TRUE)
+
+knit_hooks$set(inline=function(x) {
+  prettyNum(x, big.mark=",")
+})
+```
+
+# Data Import and Cleaning
+
+```{r import-data, include=TRUE, cache=TRUE}
+df.ar <- fread("data/application_record.csv", stringsAsFactors = TRUE)
+df.cr <- fread("data/credit_record.csv", stringsAsFactors = TRUE)
+```
+
+## View Data
+### Application Record Dataframe
+DAYS_BIRTH and DAYS_EMPLOYED columns count backwards from "current" day (0), -1 means yesterday, etc.  
+DAYS_EMPLOYED is positive, if the person is currently unemployed.
+```{r view-df-ar, echo=FALSE}
+kable(sapply(df.ar, class), col.names="type")
+# [NOTE FOR RMD] Convert variables to factors: ID, FLAG_x, CNT_x; calculate age and work in years
+head(df.ar) %>% kable()
+# [NOTE FOR RMD] OCCUPATION_TYPE blank => replace with NA
+```
+
+### Credit Record Dataframe
+MONTHS_BALANCE column counts backward from "current" month (0), -1 = previous month, -2 = 2 months prior, etc.  
+STATUS column: 0 = 1-29 days past due, 1 = 30-59 days past due, 2 = 60-89 days overdue, 3 = 90-119 days overdue, 4 = 120-149 days overdue, 5 = Overdue or bad debts, write-offs for more than 150 days, C = paid off that month,  X = No loan for the month
+```{r view-df-cr, echo=FALSE}
+kable(sapply(df.cr, class), col.names="type")
+# [NOTE FOR RMD] Convert ID to factor
+head(df.cr) %>% kable()
+# [NOTE FOR RMD] Add explanation for interpretation of MONTHS_BALANCE, STATUS columns
+```
+
+## Clean Data
+
+### Cleaning application_record.csv
+Remove duplicate IDs from application_record.csv
+```{r clean-df-ar, collapse=TRUE, cache=TRUE}
+df.ar$ID %>% unique() %>% length()
+
+duplicates <- df.ar %>% group_by(ID) %>% summarise(count = n()) %>% filter(count > 1)
+df.ar.mod <- df.ar %>% filter(!ID %in% duplicates$ID)
+
+df.ar.mod$ID %>% unique() %>% length()
+```
+
+### Cleaning credit_record.csv
+The original dataset was made available on 2020-03-24, so it is presumed current month is March 2020. 
+From months_balance we create 2 new columns indicating the month and year for each observation. Observations older than 2 years are removed.
+
+Each ID is assigned a "good" or "bad" customer status according to their credit history. If the customer paid off their balance in under 60 days (STATUS = 0, 1, or C) for more than 50% of their balance history, they are determined to be a "good" customer, otherwise they are determined to be a "bad" customer.
+```{r clean-df-cr, include=TRUE, cache=TRUE}
+# Extract month and year from months_balance in df.cr
+df.cr$month_balance <- format(as.Date("2020-03-24") %m+% months(df.cr$MONTHS_BALANCE), "%B")
+df.cr$year_balance <- format(as.Date("2020-03-24") %m+% months(df.cr$MONTHS_BALANCE), "%Y") %>% as.integer(.)
+
+# Remove records older than 2 years
+df.cr.mod <- df.cr %>% filter(MONTHS_BALANCE > -24)
+
+# Assign customer status
+df.status <- df.cr.mod %>%
+  group_by(ID) %>%
+  summarise(cnt_status_good = length(STATUS[STATUS==0|STATUS==1|STATUS=='C']), 
+            cnt_status_bad = n() - cnt_status_good, 
+            percent_good = round(cnt_status_good / n() * 100),
+            percent_bad = round(cnt_status_bad / n() * 100)) %>%
+  mutate(
+    customer_status_good = ifelse(percent_good >= 50, 1, 0)
+  ) %>%
+  select(ID, customer_status_good)
+
+df.status$customer_status_good <- as.factor(df.status$customer_status_good)
+```
+
+### Join datasets
+The two cleaned datasets are joined and only records where IDs exist in both are kept.
+
+Cleaning steps undertaken include: ... [ACTION NEEDED HERE]
+```{r join-datasets, include=TRUE}
+
+df.cc.raw <- inner_join(x = df.status, y = df.ar.mod, by = "ID") %>%
+  mutate(ID = as.factor(ID),
+         CNT_CHILDREN = as.factor(CNT_CHILDREN),
+         CNT_FAM_MEMBERS = as.factor(CNT_FAM_MEMBERS),
+         age_years = as.numeric(round(DAYS_BIRTH * (-1) / 365.25), 0),         # instead of DAYS_BIRTH
+         work_years = as.numeric(round((DAYS_EMPLOYED * (-1) / 365.25), 0)),   # instead of DAYS_EMPLOYED, negative: Pensioner
+         FLAG_MOBIL = as.factor(FLAG_MOBIL),
+         FLAG_WORK_PHONE = as.factor(FLAG_WORK_PHONE),
+         FLAG_PHONE = as.factor(FLAG_PHONE),
+         FLAG_EMAIL = as.factor(FLAG_EMAIL))
+
+# Change column names to lower case
+setnames(df.cc.raw, tolower(names(df.cc.raw)))
+
+# Look at the factor levels
+df.cc.raw %>% 
+  select(-id) %>% 
+  select_if(is.factor) %>%
+  sapply(., FUN = levels)
+
+# flag_mobil = 1 for all IDs => exclude from final dataset
+
+# occupation_type has "" level => replace with NA
+levels(df.cc.raw$occupation_type)[levels(df.cc.raw$occupation_type)==""] <- "NA"
+# df.cc.raw$occupation_type %>% table()                                        # check that "" are updated as NA
+
+# Set order of levels in education type
+df.cc.raw$name_education_type <- factor(df.cc.raw$name_education_type, levels=c("Lower secondary", "Secondary / secondary special", "Incomplete higher", "Higher education", "Academic degree"), ordered = TRUE)
+
+# Convert -ve values to NA
+df.cc.raw$work_years[df.cc.raw$work_years == '-1000'] <- NA
+
+# Select columns
+# months_balance, days_birth, days_employed and flag_mobil columns are excluded
+df.cc <- df.cc.raw %>%
+  select(id,
+         code_gender,
+         age_years,
+         name_education_type,
+         name_income_type,
+         name_housing_type,
+         name_family_status,
+         cnt_children,
+         cnt_fam_members,
+         flag_own_car,
+         flag_own_realty,
+         work_years,
+         amt_income_total,
+         occupation_type,
+         flag_work_phone,
+         flag_phone,
+         flag_email,
+         customer_status_good)
+
+```
+
+### Check Final Dataframe
+```{r summary-df-cc, include=TRUE, collapse=TRUE}
+# Meta information from df.cc
+nlevels(df.cc$id)
+
+str(df.cc)
+
+head(df.cc) %>% kable()
+```

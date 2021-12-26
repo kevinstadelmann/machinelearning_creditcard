@@ -1,0 +1,9 @@
+base
+magrittr
+data.table
+dplyr
+lubridate
+ggplot2
+lattice
+caret
+knitr

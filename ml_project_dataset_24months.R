@@ -79,12 +79,18 @@ df.cc.raw %>%
   select(-id) %>% 
   select_if(is.factor) %>%
   sapply(., FUN = levels)                                                      # alternatively: FUN=table
-# flag_mobil = 1 for all IDs => exclude
-# occupation_type has "" level => replace with NA
 
-# Replace blanks with NA
+# flag_mobil = 1 for all IDs => exclude from final dataset
+
+# occupation_type has "" level => replace with NA
 levels(df.cc.raw$occupation_type)[levels(df.cc.raw$occupation_type)==""] <- "NA"
 # df.cc.raw$occupation_type %>% table()                                        # check that "" are updated as NA
+
+# Set order of levels in education type
+df.cc.raw$name_education_type <- factor(df.cc.raw$name_education_type, levels=c("Lower secondary", "Secondary / secondary special", "Incomplete higher", "Higher education", "Academic degree"), ordered = TRUE)
+
+# Convert -ve values to NA
+df.cc.raw$work_years[df.cc.raw$work_years == '-1000'] <- NA
 
 # Selecting columns
 # [NOTE FOR RMD] months_balance, days_birth, days_employed and flag_mobil columns are excluded
@@ -110,11 +116,5 @@ df.cc <- df.cc.raw %>%
 
 # Meta information from df.cc
 nlevels(df.cc$id)
-quantile(df.cc$amt_income_total)
-min(df.cc.raw$months_balance)
-
 str(df.cc)
-colnames(df.cc)
-
-# Set order of level
-df.cc$name_education_type <- factor(df.cc$name_education_type, levels=c("Lower secondary", "Secondary / secondary special", "Incomplete higher", "Higher education", "Academic degree"), ordered = TRUE)
+head(df.cc)
