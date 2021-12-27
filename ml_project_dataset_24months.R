@@ -62,8 +62,8 @@ df.status$customer_status_good <- as.factor(df.status$customer_status_good)
 # Join datasets where ID match exists
 df.cc.raw <- inner_join(x = df.status, y = df.ar.mod, by = "ID") %>%
   mutate(ID = as.factor(ID),
-         CNT_CHILDREN = as.factor(CNT_CHILDREN),
-         CNT_FAM_MEMBERS = as.factor(CNT_FAM_MEMBERS),
+         CNT_CHILDREN = as.integer(CNT_CHILDREN),
+         CNT_FAM_MEMBERS = as.integer(CNT_FAM_MEMBERS),
          age_years = as.numeric(round(DAYS_BIRTH * (-1) / 365.25), 0),         # instead of DAYS_BIRTH
          work_years = as.numeric(round((DAYS_EMPLOYED * (-1) / 365.25), 0)),   # instead of DAYS_EMPLOYED, negative: Pensioner or unemployed
          FLAG_MOBIL = as.factor(FLAG_MOBIL),
