@@ -114,6 +114,12 @@ df.cc <- df.cc.raw %>%
          flag_email,
          customer_status_good)
 
+#Remove additional duplicates. Even tough entries have different ID's, all the other
+#columns are the same. That's why we only keep the unique ID's, which also have uniqueness
+#in all the other columns.
+
+df.cc <- df.cc[!duplicated(df.cc[c(2:18)]),]
+
 # Meta information from df.cc
 nlevels(df.cc$id)
 str(df.cc)
