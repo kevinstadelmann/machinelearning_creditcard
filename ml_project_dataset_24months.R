@@ -123,6 +123,9 @@ df.cc <- df.cc.raw %>%
 
 df.cc <- df.cc[!duplicated(df.cc[c(2:17)]),]
 
+# remove dataframes which are not used anymore
+rm("df.ar", "df.a.mod", "df.cc.raw", "df.cr.mod", "df.status", "df.ar.mod", "df.cr")
+
 # Meta information from df.cc
 nlevels(df.cc$id)
 str(df.cc)

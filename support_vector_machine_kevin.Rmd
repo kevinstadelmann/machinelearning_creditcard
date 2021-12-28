@@ -10,16 +10,16 @@ knitr::opts_chunk$set(echo = TRUE)
 # data preparation
 
 ```{r data preparation}
-# Machine Learning 1
-
-#### Settings ####
 getwd()
 
-library("magrittr")
-library("data.table")
-library("dplyr")
-library("lubridate")
-library("caret")
+library(magrittr)
+library(data.table)
+library(dplyr)
+library(lubridate)
+library(caret)
+library(inspectdf)
+library(ggplot2)
+library(GGally)
 
 
 #### Loading, joining and preparing data ####
@@ -126,10 +126,11 @@ df.cc <- df.cc.raw %>%
          flag_email,
          customer_status_good)
 
-# Meta information from df.cc
-nlevels(df.cc$id)
-str(df.cc)
-head(df.cc)
+#Remove additional duplicates. Even tough entries have different ID's, all the other
+#columns are the same. That's why we only keep the unique ID's, which also have uniqueness
+#in all the other columns.
+
+df.cc <- df.cc[!duplicated(df.cc[c(2:17)]),]
 
 
 ```
@@ -192,13 +193,15 @@ labs(title="Age vs. Working Years vs Customer Status", ylab="Test")
 library("tidyr")
 set.seed(123)
 
+rm("df.ar", "df.a.mod", "df.cc.raw", "df.cr.mod", "df.status", "df.ar.mod", "df.cr")
+
 
 # get rid of NA
-str(df.cc)
-df.cc %>% drop_na(amt_income_total)
-df.cc %>% drop_na(work_years)
-df.cc %>% drop_na(cnt_children)
-str(df.cc)
+#str(df.cc)
+#df.cc %>% drop_na(amt_income_total)
+#df.cc %>% drop_na(work_years)
+#df.cc %>% drop_na(cnt_children)
+#str(df.cc)
 
 
 # split data into train and test data sets
@@ -215,6 +218,7 @@ fit_control <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
 svm_linear <- train(customer_status_good ~ amt_income_total + , data = df.cc.training,
                     trCOntrol=fit_control,
                     method = 'svmLinear',
+                    na.action = na.pass,
                     tuneLength = 10)
 ```
 
