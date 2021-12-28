@@ -3,11 +3,14 @@
 #### Settings ####
 getwd()
 
-library("magrittr")
-library("data.table")
-library("dplyr")
-library("lubridate")
-library("caret")
+library(magrittr)
+library(data.table)
+library(dplyr)
+library(lubridate)
+library(caret)
+library(inspectdf)
+library(ggplot2)
+library(GGally)
 
 
 #### Loading, joining and preparing data ####
@@ -124,3 +127,7 @@ df.cc <- df.cc[!duplicated(df.cc[c(2:18)]),]
 nlevels(df.cc$id)
 str(df.cc)
 head(df.cc)
+
+df.cc %>%
+  inspect_cat() %>%
+  show_plot()
