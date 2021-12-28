@@ -121,7 +121,7 @@ df.cc <- df.cc.raw %>%
 #columns are the same. That's why we only keep the unique ID's, which also have uniqueness
 #in all the other columns.
 
-df.cc <- df.cc[!duplicated(df.cc[c(2:18)]),]
+df.cc <- df.cc[!duplicated(df.cc[c(2:17)]),]
 
 # Meta information from df.cc
 nlevels(df.cc$id)
