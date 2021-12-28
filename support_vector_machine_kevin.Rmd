@@ -10,12 +10,16 @@ knitr::opts_chunk$set(echo = TRUE)
 # data preparation
 
 ```{r data preparation}
+# Machine Learning 1
+
+#### Settings ####
+getwd()
+
 library("magrittr")
 library("data.table")
 library("dplyr")
 library("lubridate")
 library("caret")
-
 
 
 #### Loading, joining and preparing data ####
@@ -70,8 +74,8 @@ df.status$customer_status_good <- as.factor(df.status$customer_status_good)
 # Join datasets where ID match exists
 df.cc.raw <- inner_join(x = df.status, y = df.ar.mod, by = "ID") %>%
   mutate(ID = as.factor(ID),
-         CNT_CHILDREN = as.factor(CNT_CHILDREN),
-         CNT_FAM_MEMBERS = as.factor(CNT_FAM_MEMBERS),
+         CNT_CHILDREN = as.integer(CNT_CHILDREN),
+         CNT_FAM_MEMBERS = as.integer(CNT_FAM_MEMBERS),
          age_years = as.numeric(round(DAYS_BIRTH * (-1) / 365.25), 0),         # instead of DAYS_BIRTH
          work_years = as.numeric(round((DAYS_EMPLOYED * (-1) / 365.25), 0)),   # instead of DAYS_EMPLOYED, negative: Pensioner or unemployed
          FLAG_MOBIL = as.factor(FLAG_MOBIL),
@@ -87,12 +91,18 @@ df.cc.raw %>%
   select(-id) %>% 
   select_if(is.factor) %>%
   sapply(., FUN = levels)                                                      # alternatively: FUN=table
-# flag_mobil = 1 for all IDs => exclude
-# occupation_type has "" level => replace with NA
 
-# Replace blanks with NA
+# flag_mobil = 1 for all IDs => exclude from final dataset
+
+# occupation_type has "" level => replace with NA
 levels(df.cc.raw$occupation_type)[levels(df.cc.raw$occupation_type)==""] <- "NA"
 # df.cc.raw$occupation_type %>% table()                                        # check that "" are updated as NA
+
+# Set order of levels in education type
+df.cc.raw$name_education_type <- factor(df.cc.raw$name_education_type, levels=c("Lower secondary", "Secondary / secondary special", "Incomplete higher", "Higher education", "Academic degree"), ordered = TRUE)
+
+# Convert -ve values to NA
+df.cc.raw$work_years[df.cc.raw$work_years == '-1000'] <- NA
 
 # Selecting columns
 # [NOTE FOR RMD] months_balance, days_birth, days_employed and flag_mobil columns are excluded
@@ -118,14 +128,9 @@ df.cc <- df.cc.raw %>%
 
 # Meta information from df.cc
 nlevels(df.cc$id)
-quantile(df.cc$amt_income_total)
-min(df.cc.raw$months_balance)
-
 str(df.cc)
-colnames(df.cc)
+head(df.cc)
 
-# Set order of level
-df.cc$name_education_type <- factor(df.cc$name_education_type, levels=c("Lower secondary", "Secondary / secondary special", "Incomplete higher", "Higher education", "Academic degree"), ordered = TRUE)
 
 ```
 
@@ -182,7 +187,7 @@ labs(title="Age vs. Working Years vs Customer Status", ylab="Test")
          geom_point(size = 1)
 ```
 
-```{r}
+```{r svm preparation}
 # first try SVM https://www.youtube.com/watch?v=RKZoJVMr6CU
 library("tidyr")
 set.seed(123)
@@ -202,23 +207,20 @@ df.cc.training <- df.cc[intrain,]
 df.cc.testing <- df.cc[-intrain,]
 
 
+```
 
+```{r}
+fit_control <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
 
-fit_control <- trainControl(method = "repeatedcv", number = 10, repeats = 1)
-
-svm_linear <- train(customer_status_good ~ amt_income_total, data = df.cc.training,
+svm_linear <- train(customer_status_good ~ amt_income_total + , data = df.cc.training,
                     trCOntrol=fit_control,
                     method = 'svmLinear',
                     tuneLength = 10)
-
-
 ```
+
 ```{r}
 svm_linear
-
 test_pred <- predict(svm_linear, newdata = df.cc.testing)
-
-
 confusionMatrix(table(test_pred, df.cc.testing$customer_status_good))
 ```
 
