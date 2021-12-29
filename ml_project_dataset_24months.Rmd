@@ -101,7 +101,7 @@ df.status <- df.cr.mod %>%
   mutate(
     customer_status_good = ifelse(percent_good >= 50, 1, 0)
   ) %>%
-  select(ID, customer_status_good)
+  select(ID, customer_status_good, percent_good)
 
 df.status$customer_status_good <- as.factor(df.status$customer_status_good)
 ```
@@ -110,7 +110,7 @@ df.status$customer_status_good <- as.factor(df.status$customer_status_good)
 The two cleaned datasets are joined and only records where IDs exist in both are kept.
 
 Cleaning steps undertaken include: ... [ACTION NEEDED HERE]
-```{r join-datasets, include=TRUE}
+```{r join-datasets, include=TRUE, cache=TRUE}
 
 df.cc.raw <- inner_join(x = df.status, y = df.ar.mod, by = "ID") %>%
   mutate(ID = as.factor(ID),
@@ -164,7 +164,8 @@ df.cc <- df.cc.raw %>%
          flag_work_phone,
          flag_phone,
          flag_email,
-         customer_status_good)
+         customer_status_good,
+         percent_good)
 
 ```
 
@@ -172,11 +173,11 @@ Remove additional duplicates. Even tough entries have different ID's, all the ot
 columns are the same. That's why we only keep the unique ID's, which also have uniqueness
 in all the other columns.
 
-```{r}
-df.cc <- df.cc[!duplicated(df.cc[c(2:18)]),]
+```{r remove-dupes, cache=TRUE}
+df.cc <- df.cc[!duplicated(df.cc[c(2:17)]),]
 
 # remove dataframes which are not used anymore
-rm("df.ar", "df.a.mod", "df.cc.raw", "df.cr.mod", "df.status", "df.ar.mod", "df.cr")
+rm("df.ar", "df.ar.mod", "df.cc.raw", "df.cr", "df.cr.mod", "df.status", "duplicates")
 ```
 
 ### Check Final Dataframe
