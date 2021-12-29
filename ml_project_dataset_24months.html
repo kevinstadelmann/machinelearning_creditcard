@@ -648,8 +648,7 @@ df.status$customer_status_good &lt;- as.factor(df.status$customer_status_good)</
 <p>Cleaning steps undertaken include: … [ACTION NEEDED HERE]</p>
 <pre class="r"><code>df.cc.raw &lt;- inner_join(x = df.status, y = df.ar.mod, by = &quot;ID&quot;) %&gt;%
   mutate(ID = as.factor(ID),
-         CNT_CHILDREN = as.factor(CNT_CHILDREN),
-         CNT_FAM_MEMBERS = as.factor(CNT_FAM_MEMBERS),
+         CNT_FAM_MEMBERS = as.integer(CNT_FAM_MEMBERS),
          age_years = as.numeric(round(DAYS_BIRTH * (-1) / 365.25), 0),         # instead of DAYS_BIRTH
          work_years = as.numeric(round((DAYS_EMPLOYED * (-1) / 365.25), 0)),   # instead of DAYS_EMPLOYED, negative: Pensioner
          FLAG_MOBIL = as.factor(FLAG_MOBIL),
@@ -676,9 +675,6 @@ df.cc.raw %&gt;%
 ## 
 ## $flag_own_realty
 ## [1] &quot;N&quot; &quot;Y&quot;
-## 
-## $cnt_children
-## [1] &quot;0&quot;  &quot;1&quot;  &quot;2&quot;  &quot;3&quot;  &quot;4&quot;  &quot;5&quot;  &quot;7&quot;  &quot;14&quot; &quot;19&quot;
 ## 
 ## $name_income_type
 ## [1] &quot;Commercial associate&quot; &quot;Pensioner&quot;            &quot;State servant&quot;       
@@ -716,10 +712,7 @@ df.cc.raw %&gt;%
 ## [10] &quot;Laborers&quot;              &quot;Low-skill Laborers&quot;    &quot;Managers&quot;             
 ## [13] &quot;Medicine staff&quot;        &quot;Private service staff&quot; &quot;Realty agents&quot;        
 ## [16] &quot;Sales staff&quot;           &quot;Secretaries&quot;           &quot;Security staff&quot;       
-## [19] &quot;Waiters/barmen staff&quot; 
-## 
-## $cnt_fam_members
-##  [1] &quot;1&quot;  &quot;2&quot;  &quot;3&quot;  &quot;4&quot;  &quot;5&quot;  &quot;6&quot;  &quot;7&quot;  &quot;9&quot;  &quot;15&quot; &quot;20&quot;</code></pre>
+## [19] &quot;Waiters/barmen staff&quot;</code></pre>
 <pre class="r"><code># flag_mobil = 1 for all IDs =&gt; exclude from final dataset
 
 # occupation_type has &quot;&quot; level =&gt; replace with NA
