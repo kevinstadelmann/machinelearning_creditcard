@@ -143,11 +143,6 @@ library(caret)
 library(ggplot2)
 
 
-df.cc$work_years[df.cc$work_years == '-1000'] <- NA
-df.cc$amt_income_total[df.cc$amt_income_total > 200000] <- NA
-
-# change -1000 years to NA
-
 #df.cc %>%
 #ggplot(aes(x = age_years, y = amt_income_total, color = customer_status_good)) +
 #geom_point()+
@@ -190,41 +185,47 @@ labs(title="Age vs. Working Years vs Customer Status", ylab="Test")
 
 ```{r svm preparation}
 # first try SVM https://www.youtube.com/watch?v=RKZoJVMr6CU
+library("e1071")
 library("tidyr")
+library("tidyverse")
+library("caret")
+
 set.seed(123)
 
-rm("df.ar", "df.a.mod", "df.cc.raw", "df.cr.mod", "df.status", "df.ar.mod", "df.cr")
+# work with copy of df.cc
+df.svm <- cbind(df.cc)
 
-
-# get rid of NA
-#str(df.cc)
-#df.cc %>% drop_na(amt_income_total)
-#df.cc %>% drop_na(work_years)
-#df.cc %>% drop_na(cnt_children)
-#str(df.cc)
-
+# remove NA-values
+df.svm <- na.omit(df.svm)
 
 # split data into train and test data sets
-intrain <- createDataPartition(y = df.cc$customer_status_good, p=0.85, list = FALSE)
-df.cc.training <- df.cc[intrain,]
-df.cc.testing <- df.cc[-intrain,]
-
+intrain <- createDataPartition(y = df.svm$customer_status_good, p=0.85, list = FALSE)
+df.svm.training <- df.svm[intrain,]
+df.svm.testing <- df.svm[-intrain,]
 
 ```
 
 ```{r}
-fit_control <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+# train the support vector machine
+test_svm <- svm(customer_status_good ~ amt_income_total + work_years + cnt_children +cnt_fam_members,
+                df.svm.training,
+                kernel = "linear",
+                scale = TRUE, cost = 10)
 
-svm_linear <- train(customer_status_good ~ amt_income_total + , data = df.cc.training,
-                    trCOntrol=fit_control,
-                    method = 'svmLinear',
-                    na.action = na.pass,
-                    tuneLength = 10)
+# make the prediction
+test_pred <- predict(test_svm, df.svm.testing)
+
+# compare the predicted data with the testdata subset
+confusionMatrix(table(test_pred, df.svm.testing$customer_status_good))
+
+# plot results
+plot(test_svm, df.svm.training, df.svm$work_years ~ df.svm$age_years)
+
 ```
 
 ```{r}
-svm_linear
-test_pred <- predict(svm_linear, newdata = df.cc.testing)
-confusionMatrix(table(test_pred, df.cc.testing$customer_status_good))
+
+
+
 ```
 
