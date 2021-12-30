@@ -175,6 +175,9 @@ in all the other columns.
 ```{r remove-dupes, cache=TRUE}
 df.cc <- df.cc[!duplicated(df.cc[c(2:17)]),]
 
+# remove NA-values
+df.cc <- na.omit(df.cc)
+
 # remove dataframes which are not used anymore
 rm("df.ar", "df.ar.mod", "df.cc.raw", "df.cr", "df.cr.mod", "df.status", "duplicates")
 ```
