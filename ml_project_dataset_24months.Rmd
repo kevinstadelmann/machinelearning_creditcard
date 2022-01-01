@@ -195,4 +195,16 @@ df.cc %>%
   inspect_cat() %>%
   show_plot()
 ```
+## Optimization
 
+Optimization
+
+The distinction between good and bad customer is a way to build up a relatively safe portfolio of
+customers, which are paying back their debts with the interests on top. However, the defined treshold
+leaves space for optimization. We found two potential options to further increase earnings:
+
+1. A percentage of as "bad customer" marked credit card applications could be granted a credit card.
+This adds a marginal higher risk to the portfolio of credit card customers, but comes along with higher
+possible returns.
+
+2. Mark's Option...
