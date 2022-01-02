@@ -1,7 +1,7 @@
 ---
 title: "SVM_Marc"
 author: "Marc Weber"
-date: "28 12 2021"
+date: "28.12.2021"
 output: html_document
 ---
 
@@ -9,22 +9,330 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## R Markdown
+# data preparation
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+```{r data preparation}
+getwd()
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+library(magrittr)
+library(data.table)
+library(dplyr)
+library(lubridate)
+library(caret)
+library(inspectdf)
+library(ggplot2)
+library(GGally)
 
-```{r cars}
-summary(cars)
+
+#### Loading, joining and preparing data ####
+# source : https://www.kaggle.com/rikdifos/credit-card-approval-prediction
+# last update: 20-03-24
+df.ar <- fread("data/application_record.csv", stringsAsFactors = TRUE)
+df.cr <- fread("data/credit_record.csv", stringsAsFactors = TRUE)
+
+str(df.ar)
+# [NOTE FOR RMD] Convert variables to factors: ID, FLAG_x, CNT_x; calculate age and work in years
+head(df.ar)
+# [NOTE FOR RMD] OCCUPATION_TYPE blank => replace with NA
+
+str(df.cr)
+# [NOTE FOR RMD] Convert ID to factor
+head(df.cr)
+# [NOTE FOR RMD] Add explanation for interpretation of MONTHS_BALANCE, STATUS columns
+
+# De-dupe df.ar records, removing all IDs that are duplicated
+# df.ar$ID %>% unique() %>% length()                                           # 438510 unique IDs
+duplicates <- df.ar %>% group_by(ID) %>% summarise(count = n()) %>% filter(count > 1)
+df.ar.mod <- df.ar %>% filter(!ID %in% duplicates$ID)
+# df.ar.mod$ID %>% unique() %>% length()                                       # 438463 unique IDs
+
+# Extract month and year from months_balance in df.cr
+# [NOTE FOR RMD] months_balance column: 0 = current month, -1 = previous month, -2 = 2 months prior, etc.
+# The original dataset was made available on 2020-03-24, so it is presumed current month is March 2020.
+# From months_balance we create 2 new columns indicating the month and year for each observation.
+df.cr$month_balance <- format(as.Date("2020-03-24") %m+% months(df.cr$MONTHS_BALANCE), "%B")
+df.cr$year_balance <- format(as.Date("2020-03-24") %m+% months(df.cr$MONTHS_BALANCE), "%Y") %>% as.integer(.)
+
+# Remove records older than 2 years
+df.cr.mod <- df.cr %>%
+  filter(MONTHS_BALANCE > -24)
+
+# cnt_status_good = status 0, 1, C
+# i.e. paid off in under 60 days
+df.status <- df.cr.mod %>%
+  group_by(ID) %>%
+  summarise(cnt_status_good = length(STATUS[STATUS==0|STATUS==1|STATUS=='C']), 
+            cnt_status_bad = n() - cnt_status_good, 
+            percent_good = round(cnt_status_good / n() * 100),
+            percent_bad = round(cnt_status_bad / n() * 100)) %>%
+  mutate(
+    customer_status_good = ifelse(percent_good >= 50, 1, 0),
+    customer_status_bad = ifelse(percent_good < 50, 1, 0)
+  ) %>%
+  select(ID, customer_status_good)
+
+df.status$customer_status_good <- as.factor(df.status$customer_status_good)
+
+# Join datasets where ID match exists
+df.cc.raw <- inner_join(x = df.status, y = df.ar.mod, by = "ID") %>%
+  mutate(ID = as.factor(ID),
+         CNT_CHILDREN = as.integer(CNT_CHILDREN),
+         CNT_FAM_MEMBERS = as.integer(CNT_FAM_MEMBERS),
+         age_years = as.numeric(round(DAYS_BIRTH * (-1) / 365.25), 0),         # instead of DAYS_BIRTH
+         work_years = as.numeric(round((DAYS_EMPLOYED * (-1) / 365.25), 0)),   # instead of DAYS_EMPLOYED, negative: Pensioner or unemployed
+         FLAG_MOBIL = as.factor(FLAG_MOBIL),
+         FLAG_WORK_PHONE = as.factor(FLAG_WORK_PHONE),
+         FLAG_PHONE = as.factor(FLAG_PHONE),
+         FLAG_EMAIL = as.factor(FLAG_EMAIL))
+
+# Change column names to lower case
+setnames(df.cc.raw, tolower(names(df.cc.raw)))
+
+# Look at the factor levels
+df.cc.raw %>% 
+  select(-id) %>% 
+  select_if(is.factor) %>%
+  sapply(., FUN = levels)                                                      # alternatively: FUN=table
+
+# flag_mobil = 1 for all IDs => exclude from final dataset
+
+# occupation_type has "" level => replace with NA
+levels(df.cc.raw$occupation_type)[levels(df.cc.raw$occupation_type)==""] <- "NA"
+# df.cc.raw$occupation_type %>% table()                                        # check that "" are updated as NA
+
+# Set order of levels in education type
+df.cc.raw$name_education_type <- factor(df.cc.raw$name_education_type, levels=c("Lower secondary", "Secondary / secondary special", "Incomplete higher", "Higher education", "Academic degree"), ordered = TRUE)
+
+# Convert -ve values to NA
+df.cc.raw$work_years[df.cc.raw$work_years == '-1000'] <- NA
+
+# Selecting columns
+# [NOTE FOR RMD] months_balance, days_birth, days_employed and flag_mobil columns are excluded
+df.cc <- df.cc.raw %>%
+  select(id,
+         code_gender,
+         age_years,
+         name_education_type,
+         name_income_type,
+         name_housing_type,
+         name_family_status,
+         cnt_children,
+         cnt_fam_members,
+         flag_own_car,
+         flag_own_realty,
+         work_years,
+         amt_income_total,
+         occupation_type,
+         flag_work_phone,
+         flag_phone,
+         flag_email,
+         customer_status_good)
+
+#Remove additional duplicates. Even tough entries have different ID's, all the other
+#columns are the same. That's why we only keep the unique ID's, which also have uniqueness
+#in all the other columns.
+
+df.cc <- df.cc[!duplicated(df.cc[c(2:17)]),]
+
+# remove NA-values
+df.cc <- na.omit(df.cc)
+
+
+
 ```
 
-## Including Plots
 
-You can also embed plots, for example:
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+```{r}
+summary(df.cc)
+str(df.cc)
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+```{r}
+summary(df.cc)
+```
+
+
+```{r}
+#library(tidyverse)
+library(e1071)
+
+svmfit <- svm(customer_status_good ~ . -id, data = df.cc, kernel = "linear", sclae = FALSE)
+
+summary(svmfit)
+```
+
+```{r}
+library('fastDummies')
+```
+
+
+
+
+
+```{r}
+
+set.seed(2323)
+
+# work with copy of df.cc
+df.svm <- cbind(df.cc)
+
+# add dummy variables to work with categorical variables
+df.svm$dm_male <- ifelse(df.svm$code_gender == 'M', 1, 0)
+df.svm$dm_flag_own_car <- ifelse(df.svm$flag_own_car == 'Y', 1, 0)
+df.svm$dm_flag_own_realty <- ifelse(df.svm$flag_own_realty == 'Y', 1, 0)
+
+df.svm <- dummy_cols(df.svm, select_columns = c('name_education_type', 'name_income_type', 'name_housing_type', 'name_family_status', 'occupation_type'))
+
+# standardize
+#df.svm$log_amt_income_total <- log(df.svm$amt_income_total)
+
+
+
+
+# split data into train and test data sets
+intrain <- createDataPartition(y = df.svm$customer_status_good,
+                               p=0.65,
+                               list = FALSE)
+df.svm.training <- df.svm[intrain,]
+df.svm.testing <- df.svm[-intrain,]
+
+dim(df.svm.testing)
+dim(df.svm.training)
+
+anyNA(df.svm)
+summary(df.svm)
+```
+
+```{r}
+summary(df.svm.training)
+```
+
+
+
+
+```{r}
+## Prepare data for model
+## Only get needed columns for model
+keeps <- c(
+          "customer_status_good"
+          #,"id"
+          #,"code_gender"
+          #,"age_years"
+          #,"name_education_type"
+          #,"name_income_type"
+          #,"name_housing_type"
+          #,"name_family_status"
+          #,"cnt_children"
+          #,"cnt_fam_members"
+          #,"flag_own_car"
+          #,"flag_own_realty"
+          #,"work_years"
+          #,"amt_income_total"
+          #,"occupation_type"
+          #,"flag_work_phone"
+          #,"flag_phone"
+          #,"flag_email"
+          ,"dm_male"
+          ,"dm_flag_own_car"
+          ,"dm_flag_own_realty"
+          ,"name_education_type_Lower secondary"
+          ,"name_education_type_Secondary / secondary special"
+          ,"name_education_type_Incomplete higher"
+          ,"name_education_type_Higher education"
+          ,"name_education_type_Academic degree"
+          ,"name_income_type_Commercial associate"
+          ,"name_income_type_Pensioner"
+          ,"name_income_type_State servant"
+          #,"name_income_type_Student"
+          ,"name_income_type_Working"
+          ,"name_housing_type_Co-op apartment"
+          ,"name_housing_type_House / apartment"
+          ,"name_housing_type_Municipal apartment"
+          ,"name_housing_type_Office apartment"
+          ,"name_housing_type_Rented apartment"
+          ,"name_housing_type_With parents"
+          ,"name_family_status_Civil marriage"
+          ,"name_family_status_Married"
+          ,"name_family_status_Separated"
+          ,"name_family_status_Single / not married"
+          ,"name_family_status_Widow"
+          # ,"occupation_type_NA"
+          # ,"occupation_type_Accountants"
+          # ,"occupation_type_Cleaning staff"
+          # ,"occupation_type_Cooking staff"
+          # ,"occupation_type_Core staff"
+          # ,"occupation_type_Drivers"
+          # ,"occupation_type_HR staff"
+          # ,"occupation_type_High skill tech staff"
+          # ,"occupation_type_IT staff"
+          # ,"occupation_type_Laborers"
+          # ,"occupation_type_Low-skill Laborers"
+          # ,"occupation_type_Managers"
+          # ,"occupation_type_Medicine staff"
+          # ,"occupation_type_Private service staff"
+          # ,"occupation_type_Realty agents"
+          # ,"occupation_type_Sales staff"
+          # ,"occupation_type_Secretaries"
+          # ,"occupation_type_Security staff"
+          # ,"occupation_type_Waiters/barmen staff"
+           )
+
+df.svm.training <- df.svm.training[keeps]
+```
+
+```{r}
+colnames(df.svm.training)
+```
+
+
+```{r}
+
+# train
+trctrl <- trainControl(method = "repeatedcv", number = 5, repeats = 3)
+
+# train the support vector machine
+#cc_svm <- svm(customer_status_good ~ dm_male,
+#                df.svm.training,
+#                kernel = "linear",
+#                scale = TRUE,
+#                cost = 10)
+#grid <- expand.grid(C = c(0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2.5))
+
+#grid <- expand.grid(C = c(2), sigma = c(0.01, 0.02, 0.03, 0.04, 0.06, 0.1,0.25,0.5,1))
+
+cc_svm <- train(customer_status_good ~ .,
+                data = df.svm.training,
+                method = "svmRadial",
+                trControl=trctrl,
+                preProcess = c("center", "scale"),
+                scale = TRUE,
+                #tuneGrid = grid,
+                tuneLength = 10)
+
+#cc_svm
+
+#summary(cc_svm)
+
+# make the prediction
+test_pred <- predict(cc_svm, newdata = df.svm.testing)
+
+# compare the predicted data with the testdata subset
+confusionMatrix(table(test_pred, df.svm.testing$customer_status_good))
+
+# plot results
+#plot(cc_svm, df.svm.training, df.svm$work_years ~ df.svm$age_years)
+
+```
+
+
+
+```{r tune cost hyperparameter}
+plot(cc_svm)
+cc_svm
+
+```
+
+
+
+
