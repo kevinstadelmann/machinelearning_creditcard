@@ -1,0 +1,566 @@
+---
+title: "ml_project_dataset_24months"
+author: "Jeanette Lee, Kevin Stadelmann, Marc Weber, Patricia Wellhöfer"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_document:
+    css: styles.css
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+    number_sections: true
+---
+
+# Introduction
+[ACTION NEEDED: FILL IN]
+
+Data Source: [link](https://www.kaggle.com/rikdifos/credit-card-approval-prediction)
+(last update: 20-03-24)
+
+```{r setup, include=TRUE, warning=FALSE, message=FALSE}
+library(magrittr)
+library(data.table)
+library(dplyr)
+library(lubridate)
+library(caret)
+library(knitr)
+library(inspectdf)
+library(ggplot2)
+library(GGally)
+library(gridExtra) # added
+library(car)  # added
+
+opts_chunk$set(fig.align="center", echo=TRUE)
+
+knit_hooks$set(inline=function(x) {
+  prettyNum(x, big.mark=",")
+})
+```
+
+# Data Import and Cleaning
+
+```{r import-data, include=TRUE, cache=TRUE}
+df.ar <- fread("data/application_record.csv", stringsAsFactors = TRUE)
+df.cr <- fread("data/credit_record.csv", stringsAsFactors = TRUE)
+```
+
+## View Data
+### Application Record Dataframe
+DAYS_BIRTH and DAYS_EMPLOYED columns count backwards from "current" day (0), -1 means yesterday, etc.  
+DAYS_EMPLOYED is positive, if the person is currently unemployed.
+```{r view-df-ar, echo=FALSE}
+kable(sapply(df.ar, class), col.names="type")
+# [NOTE FOR RMD] Convert variables to factors: ID, FLAG_x, CNT_x; calculate age and work in years
+head(df.ar) %>% kable()
+# [NOTE FOR RMD] OCCUPATION_TYPE blank => replace with NA
+```
+
+### Credit Record Dataframe
+MONTHS_BALANCE column counts backward from "current" month (0), -1 = previous month, -2 = 2 months prior, etc.  
+STATUS column: 0 = 1-29 days past due, 1 = 30-59 days past due, 2 = 60-89 days overdue, 3 = 90-119 days overdue, 4 = 120-149 days overdue, 5 = Overdue or bad debts, write-offs for more than 150 days, C = paid off that month,  X = No loan for the month
+```{r view-df-cr, echo=FALSE}
+kable(sapply(df.cr, class), col.names="type")
+# [NOTE FOR RMD] Convert ID to factor
+head(df.cr) %>% kable()
+# [NOTE FOR RMD] Add explanation for interpretation of MONTHS_BALANCE, STATUS columns
+```
+
+## Clean Data
+
+### Cleaning application_record.csv
+Remove duplicate IDs from application_record.csv
+```{r clean-df-ar, collapse=TRUE, cache=TRUE}
+df.ar$ID %>% unique() %>% length()
+
+duplicates <- df.ar %>% group_by(ID) %>% summarise(count = n()) %>% filter(count > 1)
+df.ar.mod <- df.ar %>% filter(!ID %in% duplicates$ID)
+
+df.ar.mod$ID %>% unique() %>% length()
+```
+
+### Cleaning credit_record.csv
+The original dataset was made available on 2020-03-24, so it is presumed current month is March 2020. 
+From months_balance we create 2 new columns indicating the month and year for each observation. Observations older than 2 years are removed.
+
+Each ID is assigned a "good" or "bad" customer status according to their credit history. If the customer paid off their balance in under 60 days (STATUS = 0, 1, or C) for more than 50% of their balance history, they are determined to be a "good" customer, otherwise they are determined to be a "bad" customer.
+```{r clean-df-cr, include=TRUE, cache=TRUE}
+# Extract month and year from months_balance in df.cr
+df.cr$month_balance <- format(as.Date("2020-03-24") %m+% months(df.cr$MONTHS_BALANCE), "%B")
+df.cr$year_balance <- format(as.Date("2020-03-24") %m+% months(df.cr$MONTHS_BALANCE), "%Y") %>% as.integer(.)
+
+# Remove records older than 2 years
+df.cr.mod <- df.cr %>% filter(MONTHS_BALANCE > -24)
+
+# Assign customer status
+df.status <- df.cr.mod %>%
+  group_by(ID) %>%
+  summarise(cnt_status_good = length(STATUS[STATUS==0|STATUS==1|STATUS=='C']), 
+            cnt_status_bad = n() - cnt_status_good, 
+            percent_good = round(cnt_status_good / n() * 100),
+            percent_bad = round(cnt_status_bad / n() * 100)) %>%
+  mutate(
+    customer_status_good = ifelse(percent_good >= 50, 1, 0)
+  ) %>%
+  select(ID, customer_status_good, percent_good)
+
+df.status$customer_status_good <- as.factor(df.status$customer_status_good)
+```
+
+### Join datasets
+The two cleaned datasets are joined and only records where IDs exist in both are kept.
+
+Cleaning steps undertaken include: ... [ACTION NEEDED HERE]
+```{r join-datasets, include=TRUE, cache=TRUE}
+
+df.cc.raw <- inner_join(x = df.status, y = df.ar.mod, by = "ID") %>%
+  mutate(ID = as.factor(ID),
+         CNT_FAM_MEMBERS = as.integer(CNT_FAM_MEMBERS),
+         age_years = as.numeric(round(DAYS_BIRTH * (-1) / 365.25), 0),         # instead of DAYS_BIRTH
+         work_years = as.numeric(round((DAYS_EMPLOYED * (-1) / 365.25), 0)),   # instead of DAYS_EMPLOYED, negative: Pensioner
+         FLAG_MOBIL = as.factor(FLAG_MOBIL),
+         FLAG_WORK_PHONE = as.factor(FLAG_WORK_PHONE),
+         FLAG_PHONE = as.factor(FLAG_PHONE),
+         FLAG_EMAIL = as.factor(FLAG_EMAIL))
+
+# Change column names to lower case
+setnames(df.cc.raw, tolower(names(df.cc.raw)))
+
+# Look at the factor levels
+df.cc.raw %>% 
+  select(-id) %>% 
+  select_if(is.factor) %>%
+  sapply(., FUN = levels)
+
+# flag_mobil = 1 for all IDs => exclude from final dataset
+
+# occupation_type has "" level => replace with NA
+levels(df.cc.raw$occupation_type)[levels(df.cc.raw$occupation_type)==""] <- "NA"
+# df.cc.raw$occupation_type %>% table()                                        # check that "" are updated as NA
+
+# Set order of levels in education type
+df.cc.raw$name_education_type <- factor(df.cc.raw$name_education_type, levels=c("Lower secondary", "Secondary / secondary special", "Incomplete higher", "Higher education", "Academic degree"), ordered = TRUE)
+
+# Convert -ve values to NA
+df.cc.raw$work_years[df.cc.raw$work_years == '-1000'] <- NA
+
+# Select columns
+# months_balance, days_birth, days_employed and flag_mobil columns are excluded
+df.cc <- df.cc.raw %>%
+  select(id,
+         code_gender,
+         age_years,
+         name_education_type,
+         name_income_type,
+         name_housing_type,
+         name_family_status,
+         cnt_children,
+         cnt_fam_members,
+         flag_own_car,
+         flag_own_realty,
+         work_years,
+         amt_income_total,
+         occupation_type,
+         flag_work_phone,
+         flag_phone,
+         flag_email,
+         customer_status_good,
+         percent_good)
+
+```
+
+### Remove duplicates
+Remove additional duplicates. Even tough entries have different ID's, all the other
+columns are the same. That's why we only keep the unique ID's, which also have uniqueness
+in all the other columns.
+
+```{r remove-dupes, cache=TRUE}
+df.cc <- df.cc[!duplicated(df.cc[c(2:17)]),]
+
+# remove NA-values
+df.cc <- na.omit(df.cc)
+
+# remove dataframes which are not used anymore
+rm("df.ar", "df.ar.mod", "df.cc.raw", "df.cr", "df.cr.mod", "df.status", "duplicates")
+```
+
+### Check Final Dataframe
+```{r summary-df-cc, include=TRUE, collapse=TRUE}
+# Meta information from df.cc
+nlevels(df.cc$id)
+
+str(df.cc)
+
+head(df.cc) %>% kable()
+
+#df.cc %>% inspect_cat() %>% show_plot()
+```
+
+
+# Model 1: Linear Model
+Predictive Model: How do socio-economic variables influence an individual's behaviour in paying off their credit balance?
+The scope of this analysis is to be able to preidct the percentage of times that an individual pays off their credit balance within 60 days.
+
+## Graphical Analysis
+### Continuous Variables
+We start the graphical analysis by plotting the response variable (i.e. percent_good) against the predictor age (i.e. age_years).
+```{r lm-ga-age, message=FALSE, cache=TRUE}
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = age_years)) +
+  geom_point() + geom_smooth(method="lm")
+```
+There seems to be a slight positive relationship between these two variables.  
+  
+Plotting the response variable against the other continuous variables, we see no clear relationship with work_years, however a slightly negative relationship with amt_total_income. 
+### [ACTION NEEDED] hide plot?
+```{r lm-ga-workyears, include=TRUE, message=FALSE, cache=TRUE}
+ggplot(data = subset(df.cc, work_years > 0), mapping = aes(y = percent_good, x = work_years)) +
+  geom_point() + geom_smooth(method="lm")   # default applies 'gam' method, but still no obvious relationship
+```
+```{r lm-ga-income, message=FALSE, cache=TRUE}
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = amt_income_total)) +
+  geom_point() + geom_smooth(method="lm")   # default applies 'gam' method which suggests a possible non-linear relationship
+```
+Here, we can see that there are few accounts (`r count(df.cc[df.cc$amt_income_total > 750000,])`) with a total income above 750K, it would be recommended to omit or recenter focus for regression as accuracy of the prediction would be reduced in this higher income range.
+
+### [ACTION NEEDED] Move to cleanup?
+We see that there are few individuals with academic degrees, so we group them with higher education.
+```{r clean-education}
+df.cc$name_education_type <- recode_factor(df.cc$name_education_type, "Academic degree" = "Higher education")
+df.cc$name_education_type <- factor(df.cc$name_education_type, levels=c("Lower secondary", "Secondary / secondary special", "Incomplete higher", "Higher education"), ordered = TRUE)
+```
+
+### Categorical Variables
+Next we plot the categorical variables against our dependent variable. The boxplots indicate that the median for name_education_type, name_housing_type, name_family_status, occupation_type, and flag_realty are the same (100%), however their factor levels differ in spread. This suggests there may exist a relationship between these variables and the dependent variable. 
+```{r lm-ga-categorical, include=TRUE}
+plot.ed <- ggplot(data = df.cc, mapping = aes(y = percent_good, x = name_education_type)) +
+  geom_boxplot() + theme(axis.text.x=element_text(angle=45, hjust=1)) + 
+  geom_text(aes(label = ..count..), y = 103, stat = "count", size = 3, color="darkcyan") + coord_cartesian(ylim=c(0,105))
+
+plot.housing <- ggplot(data = df.cc, mapping = aes(y = percent_good, x = name_housing_type)) +
+  geom_boxplot() + theme(axis.text.x=element_text(angle=45, hjust=1)) + 
+  geom_text(aes(label = ..count..), y = 103, stat = "count", size = 3, color="darkcyan") + coord_cartesian(ylim=c(0,105))
+
+plot.occupation <- ggplot(data = df.cc, mapping = aes(y = percent_good,x = occupation_type)) +
+  geom_boxplot() + theme(axis.text.x=element_text(angle=45, hjust=1)) + 
+  geom_text(aes(label = ..count..), y = 105, stat = "count", size = 3, color="darkcyan", angle = 50) + coord_cartesian(ylim=c(0,105))
+
+plot.famstatus <- ggplot(data = df.cc, mapping = aes(y = percent_good, x = name_family_status)) +
+  geom_boxplot() + theme(axis.text.x=element_text(angle=45, hjust=1)) + 
+  geom_text(aes(label = ..count..), y = 103, stat = "count", size = 3, color="darkcyan") + coord_cartesian(ylim=c(0,105))
+
+plot.realty <- ggplot(data = df.cc, mapping = aes(y = percent_good, x = flag_own_realty)) +
+  geom_boxplot() + theme(axis.text.x=element_text(angle=45, hjust=1)) + 
+  geom_text(aes(label = ..count..), y = 103, stat = "count", size = 3, color="darkcyan") + coord_cartesian(ylim=c(0,105))
+```
+```{r lm-ga-categorical-plot, echo=FALSE}
+grid.arrange(plot.ed, plot.housing, plot.famstatus, ncol=3)
+grid.arrange(plot.occupation, plot.realty, ncol=2)
+```
+Inspecting the predictor name_income_type, pensioners and students seem to have lower percentage of paying off loans within 60 days than other income types and so we consider this variable when fitting the model. We do need to be cautious here, as these two factor levels have very small base sizes.
+### [ACTION NEEDED] remove count?
+```{r lm-ga-income-type}
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = name_income_type)) + geom_boxplot() +
+  geom_text(aes(label = ..count..), y = 103, stat = "count", size = 3, color="darkcyan") + coord_cartesian(ylim=c(0,105))
+```
+The remaining categorical variables seem to show no influence on percent_good, based on inspection of the boxplots.
+```{r lm-ga-factor-noinfluence, include=FALSE}
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = code_gender)) +
+  geom_boxplot()
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = flag_own_car)) +
+  geom_boxplot()
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = flag_email)) +
+  geom_boxplot()
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = flag_work_phone)) +
+  geom_boxplot()
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = flag_phone)) +
+  geom_boxplot()
+```
+
+### Count Variables
+Plotting our two count variables, we see some outliers (cnt_children > 5, cnt_fam_members > 7), which we consider removing from the dataset as these are fringe cases that are unlikely to come up often.
+```{r lm-ga-count, include=TRUE}
+plot.children <- ggplot(data = df.cc, mapping = aes(y = percent_good, x = cnt_children, group = as.factor(cnt_children))) + geom_boxplot() +
+  geom_text(aes(label = ..count..), y = 105, stat = "count", size = 3, color="darkcyan") + coord_cartesian(ylim=c(0,105))
+
+plot.family <- ggplot(data = df.cc, mapping = aes(y = percent_good, x = cnt_fam_members, group = as.factor(cnt_fam_members))) + geom_boxplot() + 
+  geom_text(aes(label = ..count..), y = 105, stat = "count", size = 3, color="darkcyan") + coord_cartesian(ylim=c(0,105))
+
+grid.arrange(plot.children, plot.family, nrow=2)
+```
+```{r remove-outliers, include=FALSE}
+table(df.cc$cnt_fam_members)
+df.cc.new <- df.cc[df.cc$cnt_fam_members < 7, ]
+```
+
+### Colinearity
+With a few of the variables, there is the possibility of colinearity, specifically between age_years and work_years, and cnt_fam_members and cnt_children. We inspect this by plotting the variables against one another.
+```{r colinearity-years, cache=TRUE}
+plot.c.years <- ggplot(data = df.cc.new, mapping = aes(y = work_years, x = age_years)) + geom_point()
+
+plot.c.family <- ggplot(data = df.cc.new, mapping = aes(y = cnt_fam_members, x = cnt_children)) + geom_point()
+
+grid.arrange(plot.c.years, plot.c.family, ncol=2)
+```
+```{r colinearity-years-vif, cache=TRUE}
+# consider removing?
+vif(lm(percent_good ~ age_years + work_years, data = df.cc.new))
+vif(lm(percent_good ~ cnt_children + cnt_fam_members, data = df.cc.new))
+```
+Looking at the count variables, we can see that these pairs of predictors are correlated (especially between cnt_fam_members and cnt_children) suggesting one of the variables in each pair should be dropped.
+
+### Interactions
+Next we investigate whether there are interactions between the variables previously identified.
+```{r check-interact-age, message=FALSE, cache=TRUE}
+## variables to consider as IVs: ##
+# continuous: age_years, amt_income_total
+# count: cnt_fam_members
+# categorical: name_education_type, name_housing_type, occupation_type, name_family_status, name_income_type
+
+pairs(~ age_years + amt_income_total, data = subset(df.cc.new, work_years > 0), pch = 20, col = "darkcyan")
+# there seems to be no interaction between age_years and amt_income_total
+
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = age_years, group = as.factor(cnt_fam_members))) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~as.factor(cnt_fam_members)) + ggtitle("Percent_good by age and family members")
+# note: lack of data for cnt_fam_members for age < 25 and age > 50 when making predictions
+
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = age_years, group = name_education_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_education_type) + ggtitle("Percent_good by age and education")
+# note: very few data points for academic degree; differing regression lines by education suggest interaction
+
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = age_years, group = name_housing_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_housing_type) + ggtitle("Percent_good by age and housing type")
+# differing regression lines by housing type suggest interaction
+
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = age_years, group = occupation_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~occupation_type) + ggtitle("Percent_good by age and occupation")
+# note: lack of data for realty agents with age < 30
+# table(df.cc.new$occupation_type)
+# note: distribution by occupation type - 1281 NA, 17 IT staff, 16 Realty agents (not enough data)
+# note: outliers for IT staff and realty agents (0 %_good) could be pulling the regression line
+
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = age_years, group = name_family_status)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_family_status) + ggtitle("Percent_good by age and family status")
+# slight interaction between age and marital status
+
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = age_years, group = name_income_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_income_type) + ggtitle("Percent_good by age and income type")
+# table(df.cc.new$name_income_type)
+# note: few pensioners and students in dataset - not enough data to conclude interaction exists
+
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = age_years, group = flag_own_realty)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~flag_own_realty) + ggtitle("Percent_good by age and realty owner")
+```
+Individuals with 5 or 6 family members seem to be concentrated in the 30-45 age range, while the other family sizes are more distributed.
+Also, different housing types seem to have different slopes, suggesting an interaction with age. There may be a slight interaction between age and realty ownership as well.
+### [ACTION NEEDED] show only age:housing plot?
+```{r check-interact-income, message=FALSE, cache=TRUE}
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = amt_income_total, group = as.factor(cnt_fam_members))) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~as.factor(cnt_fam_members)) + ggtitle("Percent_good by income and family members")
+# difference in slope of regression line by cnt_fam_members suggest interaction
+
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = amt_income_total, group = name_education_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_education_type) + ggtitle("Percent_good by income and education")
+# difference in slope of regression line by education suggests interaction
+
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = amt_income_total, group = name_housing_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_housing_type) + ggtitle("Percent_good by income and housing type")
+# differing regression line by housing type suggests interaction
+
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = amt_income_total, group = occupation_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~occupation_type) + ggtitle("Percent_good by income and occupation")
+# differing regression line by occupation type suggests interaction
+
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = amt_income_total, group = name_family_status)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_family_status) + ggtitle("Percent_good by income and family status")
+# differing regression line by marital status suggests interaction
+
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = amt_income_total, group = name_income_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_income_type) + ggtitle("Percent_good by income and income type")
+# no clear interaction
+
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = amt_income_total, group = flag_own_realty)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~flag_own_realty) + ggtitle("Percent_good by income and realty owner")
+# no clear interaction
+```
+Here it seems that larger families (cnt_fam_members = 5 or 6) are concentrated at a lower total income (< 250K).
+Similarly, those with only lower secondary education are concentrated at a lower total income (< 250K).
+We can see that some occupation types (cleaning staff, cooking staff, low-skill laborers, realty agents, secretaries, waiters) are primarily concentrated at a lower income level.
+### [ACTION NEEDED] Hide plots since there are no strong indication of interactions? age:realty, cnt_fam_members:realty indicate interactions
+```{r no-interactions, include=TRUE, message=FALSE}
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = cnt_fam_members, group = name_education_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_education_type) + ggtitle("Percent_good by family members and education")
+
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = cnt_fam_members, group = name_housing_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_housing_type) + ggtitle("Percent_good by family members and housing type")
+
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = cnt_fam_members, group = occupation_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~occupation_type) + ggtitle("Percent_good by family members and occupation")
+
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = cnt_fam_members, group = name_family_status)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_family_status) + ggtitle("Percent_good by family members and family status")
+
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = cnt_fam_members, group = name_income_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_income_type) + ggtitle("Percent_good by family members and income type")
+
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = cnt_fam_members, group = flag_own_realty)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~flag_own_realty) + ggtitle("Percent_good by family members and realty owner")
+
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = name_education_type, group = name_housing_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_housing_type) + ggtitle("Percent_good by education and housing type")
+
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = name_education_type, group = occupation_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~occupation_type) + ggtitle("Percent_good by education and occupation")
+
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = name_education_type, group = name_family_status)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_family_status) + ggtitle("Percent_good by education and family status")
+
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = name_education_type, group = name_income_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_income_type) + ggtitle("Percent_good by education and income type")
+
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = name_education_type, group = flag_own_realty)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~flag_own_realty) + ggtitle("Percent_good by education and realty owner")
+
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = name_housing_type, group = occupation_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~occupation_type) + ggtitle("Percent_good by housing type and occupation")
+
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = name_housing_type, group = name_family_status)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_family_status) + ggtitle("Percent_good by housing type and family status")
+
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = name_housing_type, group = name_income_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_income_type) + ggtitle("Percent_good by housing type and income type")
+
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = name_housing_type, group = flag_own_realty)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~flag_own_realty) + ggtitle("Percent_good by housing type and realty owner")
+
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = occupation_type, group = name_family_status)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_family_status) + ggtitle("Percent_good by occupation and family status")
+
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = occupation_type, group = name_income_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_income_type) + ggtitle("Percent_good by occupation and income type")
+
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = occupation_type, group = flag_own_realty)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~flag_own_realty) + ggtitle("Percent_good by occupation and realty owner")
+
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = name_family_status, group = name_income_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_income_type) + ggtitle("Percent_good by family status and income type")
+
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = name_family_status, group = flag_own_realty)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~flag_own_realty) + ggtitle("Percent_good by family status and realty owner")
+
+ggplot(data = df.cc.new, mapping = aes(y = percent_good, x = name_income_type, group = flag_own_realty)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~flag_own_realty) + ggtitle("Percent_good by income type and realty owner")
+```
+Possible interactions identified from plots: age_year:name_housing_type, age_year:flag_own_realty, amt_income_total:name_housing_type, amt_income_total:occupation_type, amt_income_total:name_family_status, cnt_fam_members:name_family_status, name_education_type:occupation_type, cnt_fam_members:education(lower secondary), cnt_fam_members:flag_own_realty
+
+## Fit Models
+### Global F-test
+Start with quick global F-test to see if any of the predictors have an influence on the response variable, by comparing full model and model with only the intercept, which gives evidence that at least one of predictors plays a relevant role, albeit weakly. Using drop1() suggests occupation_type and flag_own_realty to be the most likely predictors.
+```{r lm-all, cache=TRUE}
+lm.fit.0 <- lm(percent_good ~ 1, data = df.cc.new)
+
+lm.fit <- lm(percent_good ~ code_gender + age_years + name_education_type + name_income_type + name_housing_type + name_family_status + cnt_fam_members + flag_own_car + flag_own_realty + work_years + amt_income_total + occupation_type + flag_work_phone + flag_phone + flag_email, data = df.cc.new)
+anova(lm.fit.0, lm.fit)
+drop1(lm.fit, test = "F")
+```
+
+### Simple Regression Models
+We start by fitting simple regression models with each of the identified independent variables and use summary() (continuous variables) or drop1() (categorical variables) to test the variables.
+```{r lm-no-interaction, cache=TRUE}
+lm.fit.age <- lm(percent_good ~ age_years, data = df.cc.new)
+# summary(lm.fit.age)   # not statistically significant
+
+lm.fit.income <- lm(percent_good ~ amt_income_total, data = df.cc.new)
+# summary(lm.fit.income)   # not statistically significant
+
+lm.fit.cntfam <- lm(percent_good ~ cnt_fam_members, data = df.cc.new)
+# drop1(lm.fit.cntfam, test = "F")   # not statistically significant
+
+lm.fit.education <- lm(percent_good ~ name_education_type, data = df.cc.new)
+# drop1(lm.fit.education, test = "F")   # not statistically significant
+
+lm.fit.housing <- lm(percent_good ~ name_housing_type, data = df.cc.new)
+# drop1(lm.fit.housing, test = "F")   # not statistically significant
+
+lm.fit.occupation <- lm(percent_good ~ occupation_type, data = df.cc.new)
+drop1(lm.fit.occupation, test = "F")   # statistically significant
+anova(lm.fit.0, lm.fit.occupation)
+# output shows there is strong evidence the model with more parameters better fits the data
+# RSS for lm.income.1 is lower and p-value is significannt, indicating complex model is better
+
+lm.fit.occ.fam <- update(lm.fit.occupation, . ~ . + name_family_status)
+# drop1(lm.fit.occ.fam, test = "F")   # not statistically significant
+
+lm.fit.occ.incometype <- update(lm.fit.occupation, . ~ . + name_income_type)
+# drop1(lm.fit.occ.incometype, test = "F")   # not statistically significant
+
+lm.fit.occ.realty <- update(lm.fit.occupation, . ~ . + flag_own_realty)
+drop1(lm.fit.occ.realty, test = "F")   # statistically significant
+anova(lm.fit.occupation, lm.fit.occ.realty)
+```
+Outputs show that occupation_type is statistically significant and using anova() to compare against a model that contains only an intercept, there is strong evidence the model with more parameters better fits the data (lower RSS for model with occupation_type, significant p-value).
+```{r lm-no-interaction2, cache=TRUE}
+lm.fit.occ.fam <- update(lm.fit.occupation, . ~ . + name_family_status)
+# drop1(lm.fit.occ.fam, test = "F")   # not statistically significant
+
+lm.fit.occ.incometype <- update(lm.fit.occupation, . ~ . + name_income_type)
+# drop1(lm.fit.occ.incometype, test = "F")   # not statistically significant
+
+lm.fit.occ.realty <- update(lm.fit.occupation, . ~ . + flag_own_realty)
+drop1(lm.fit.occ.realty, test = "F")   # statistically significant
+anova(lm.fit.occupation, lm.fit.occ.realty)
+```
+Adding the other variables, we see that only flag_own_realty is statistically significant and comparing with the previous model, containing occupation_type, we see some evidence that the more complex model is a better fit to the data. Thus we continue with `r formula(lm.fit.occ.realty)`
+
+### Regression Models with Interaction
+We had identified 2 variables that showed potential interaction with occupation_type, and 2 with flag_own_realty, we look at these now to determine whether interactions should be included in the model.  
+```{r lm-fit-interaction, include=TRUE, cache=TRUE}
+lm.fit.interact.1 <- update(lm.fit.occ.realty, . ~ . + occupation_type:amt_income_total)
+# drop1(lm.fit.interact.1, test = "F")   # insignificant interaction
+
+lm.fit.interact.2 <- update(lm.fit.occ.realty, . ~ . + occupation_type:name_education_type)
+# drop1(lm.fit.interact.2, test = "F")   # insignificant interaction
+
+lm.fit.interact.3 <- update(lm.fit.occ.realty, . ~ . + flag_own_realty:age_years)
+# drop1(lm.fit.interact.3, test = "F")   # insignificant interaction
+
+lm.fit.interact.4 <- update(lm.fit.occ.realty, . ~ . + flag_own_realty:cnt_fam_members)
+drop1(lm.fit.interact.4, test = "F")   # slight interaction
+anova(lm.fit.occ.realty, lm.fit.interact.4)
+```
+Here there is only weak evidence that the flag_own_realty:cnt_fam_members interaction plays a role.
+
+## Measures of Fit
+To quantify the goodness of fit, we look at the R^2 and adjusted R^2 values:  
+
+Fit Value                                                           | occupation_type                                                     | occupation_type + flag_own_realty                                   | occupation_type + flag_own_realty + flag_own_realty:cnt_fam_members  
+------------------------------------------------------------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------- | -------------------------------------------------------------------  
+R^2                                                                 |                  `r round(summary(lm.fit.occupation)$r.squared, 5)` | `r round(summary(lm.fit.occ.realty)$r.squared, 5)`                  | `r round(summary(lm.fit.interact.4)$r.squared, 5)`  
+adj R^2                                                          | `r round(summary(lm.fit.occupation)$adj.r.squared, 5)`              | `r round(summary(lm.fit.occ.realty)$adj.r.squared, 5)`              | `r round(summary(lm.fit.interact.4)$adj.r.squared, 5)`  
+
+We see that the model with interaction has the best R^2 value, however, taking into account the differing complexity of the models, which still shows a slightly higher adjusted R^2, but not by much.
+
+## Fitted values and Residuals
+### [ACTION NEEDED] Is there a better way to depict?
+```{r lm-residuals}
+fitted.credit <- fitted(lm.fit.occupation)
+
+plot(percent_good ~ occupation_type, data = df.cc.new, col = "darkgray")
+points(fitted.credit ~ occupation_type, data = df.cc.new, col = "blue", pch = 19)
+```
+
+## Predicted values
+```{r lm-subset}
+set.seed(1)
+indices <- createDataPartition(df.cc$percent_good, p=.85, list=F)
+# train <- df.cc %>% slice(indices)
+test_in <- df.cc %>% slice(-indices) %>% select(-customer_status_good, -percent_good)
+test_true <- df.cc %>% slice(-indices) %>% select(percent_good)
+```
+
+```{r lm-predict}
+pred.credit <- predict(object = lm.fit.interact.4, newdata = test_in)
+
+plot(x = 1:length(test_true$percent_good), y = test_true$percent_good)
+points(x = 1:length(pred.credit), y = pred.credit, col = "blue")
+```

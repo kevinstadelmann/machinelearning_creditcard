@@ -1,0 +1,14 @@
+base
+magrittr
+data.table
+dplyr
+lubridate
+ggplot2
+lattice
+caret
+knitr
+inspectdf
+GGally
+gridExtra
+carData
+car
