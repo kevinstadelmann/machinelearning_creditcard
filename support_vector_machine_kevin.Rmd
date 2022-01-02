@@ -10,16 +10,16 @@ knitr::opts_chunk$set(echo = TRUE)
 # data preparation
 
 ```{r data preparation}
-# Machine Learning 1
-
-#### Settings ####
 getwd()
 
-library("magrittr")
-library("data.table")
-library("dplyr")
-library("lubridate")
-library("caret")
+library(magrittr)
+library(data.table)
+library(dplyr)
+library(lubridate)
+library(caret)
+library(inspectdf)
+library(ggplot2)
+library(GGally)
 
 
 #### Loading, joining and preparing data ####
@@ -126,10 +126,15 @@ df.cc <- df.cc.raw %>%
          flag_email,
          customer_status_good)
 
-# Meta information from df.cc
-nlevels(df.cc$id)
-str(df.cc)
-head(df.cc)
+#Remove additional duplicates. Even tough entries have different ID's, all the other
+#columns are the same. That's why we only keep the unique ID's, which also have uniqueness
+#in all the other columns.
+
+df.cc <- df.cc[!duplicated(df.cc[c(2:17)]),]
+
+# remove NA-values
+df.cc <- na.omit(df.cc)
+
 
 
 ```
@@ -141,11 +146,6 @@ library(e1071)
 library(caret)
 library(ggplot2)
 
-
-df.cc$work_years[df.cc$work_years == '-1000'] <- NA
-df.cc$amt_income_total[df.cc$amt_income_total > 200000] <- NA
-
-# change -1000 years to NA
 
 #df.cc %>%
 #ggplot(aes(x = age_years, y = amt_income_total, color = customer_status_good)) +
@@ -189,38 +189,105 @@ labs(title="Age vs. Working Years vs Customer Status", ylab="Test")
 
 ```{r svm preparation}
 # first try SVM https://www.youtube.com/watch?v=RKZoJVMr6CU
+# https://www.datacamp.com/community/tutorials/support-vector-machines-r
+
+
+
+library("e1071")
 library("tidyr")
-set.seed(123)
+library("tidyverse")
+library("caret")
 
+set.seed(2323)
 
-# get rid of NA
-str(df.cc)
-df.cc %>% drop_na(amt_income_total)
-df.cc %>% drop_na(work_years)
-df.cc %>% drop_na(cnt_children)
-str(df.cc)
+# work with copy of df.cc
+df.svm <- cbind(df.cc)
+
+# remove NA-values
+df.svm <- na.omit(df.svm)
+
+# add dummy variables to work with categorical variables
+df.svm$dm_male <- ifelse(df.cc$code_gender == 'M', 1, 0)
 
 
 # split data into train and test data sets
-intrain <- createDataPartition(y = df.cc$customer_status_good, p=0.85, list = FALSE)
-df.cc.training <- df.cc[intrain,]
-df.cc.testing <- df.cc[-intrain,]
+intrain <- createDataPartition(y = df.svm$customer_status_good,
+                               p=0.85,
+                               list = FALSE)
+df.svm.training <- df.svm[intrain,]
+df.svm.testing <- df.svm[-intrain,]
 
+dim(df.svm.testing)
+dim(df.svm.training)
+
+anyNA(df.svm)
+summary(df.svm)
+```
+
+```{r}
+
+# train
+trctrl <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+
+# train the support vector machine
+#cc_svm <- svm(customer_status_good ~ dm_male,
+#                df.svm.training,
+#                kernel = "linear",
+#                scale = TRUE,
+#                cost = 10)
+cc_svm <- train(customer_status_good ~ amt_income_total + work_years + dm_male,
+                data = df.svm.training,
+                trControl=trctrl,
+                preProcess = c("center", "scale"),
+                scale = TRUE,
+                tuneLength = 10)
+
+#cc_svm
+
+#summary(cc_svm)
+
+# make the prediction
+test_pred <- predict(cc_svm, newdata = df.svm.testing)
+
+# compare the predicted data with the testdata subset
+confusionMatrix(table(test_pred, df.svm.testing$customer_status_good))
+
+# plot results
+#plot(cc_svm, df.svm.training, df.svm$work_years ~ df.svm$age_years)
 
 ```
 
 ```{r}
-fit_control <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+# neuer versuch
+set.seed(123)
+indices <- createDataPartition(df.svm$customer_status_good, p=.65, list = F)
 
-svm_linear <- train(customer_status_good ~ amt_income_total + , data = df.cc.training,
-                    trCOntrol=fit_control,
-                    method = 'svmLinear',
-                    tuneLength = 10)
+train <- df.svm %>%
+slice(indices)
+
+test_in <- df.svm %>%
+slice(-indices) %>%
+select(-customer_status_good)
+
+test_truth <- df.svm %>%
+slice(-indices) %>%
+pull(customer_status_good)
+
+set.seed(123)
+test_svm <- svm(customer_status_good ~ amt_income_total + age_years + work_years
+                + dm_male,
+                train,
+                kernel = "linear",
+                scale = TRUE,
+                preProcess = c("center", "scale"),
+                cost = 10)
+test_svm
+
+test_pred <- predict(test_svm, test_in)
+conf_matrix <- confusionMatrix(test_pred, test_truth)
+conf_matrix
 ```
 
 ```{r}
-svm_linear
-test_pred <- predict(svm_linear, newdata = df.cc.testing)
-confusionMatrix(table(test_pred, df.cc.testing$customer_status_good))
-```
 
+```

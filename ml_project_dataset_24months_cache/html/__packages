@@ -7,3 +7,5 @@ ggplot2
 lattice
 caret
 knitr
+inspectdf
+GGally
