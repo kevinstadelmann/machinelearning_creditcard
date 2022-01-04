@@ -5,7 +5,7 @@ date: "12/31/2021"
 output: html_document
 ---
 
-```{r setup, include=FALSE}
+```{r setup, include=TRUE, warning=FALSE, message=FALSE}
 library(magrittr)
 library(data.table)
 library(dplyr)
@@ -16,25 +16,468 @@ library(ggplot2)
 library(GGally)
 library(mgcv)
 library(splitTools)
-knitr::opts_chunk$set(echo = TRUE)
+library(performance)
+library(knitr)
+opts_chunk$set(fig.align="center", echo=TRUE)
+
+knit_hooks$set(inline=function(x) {
+  prettyNum(x, big.mark=",")
+})
 ```
 
-## R Markdown
+# Research Question
+Which variables have a significant impact on the creditworthiness of the clients in this dataset?
+The dependent variable used for LM, GLM-poisson and GAM was percent_good. The dependent variable used for SVM XXXXXXXXX was customer_status_good. We used both variables as indication for the creditworthiness of a client.
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
-
-```{r cars}
-summary(cars)
+# Data Import and Cleaning
+```{r import-data, include=TRUE, cache=TRUE}
+df.ar <- fread("data/application_record.csv", stringsAsFactors = TRUE)
+df.cr <- fread("data/credit_record.csv", stringsAsFactors = TRUE)
 ```
 
-## Including Plots
-
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
+## View Data
+### Application Record Dataframe
+DAYS_BIRTH and DAYS_EMPLOYED columns count backwards from "current" day (0), -1 means yesterday, etc.  
+DAYS_EMPLOYED is positive, if the person is currently unemployed.
+```{r view-df-ar, echo=FALSE}
+kable(sapply(df.ar, class), col.names="type")
+# [NOTE FOR RMD] Convert variables to factors: ID, FLAG_x, CNT_x; calculate age and work in years
+head(df.ar) %>% kable()
+# [NOTE FOR RMD] OCCUPATION_TYPE blank => replace with NA
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+### Credit Record Dataframe
+MONTHS_BALANCE column counts backward from "current" month (0), -1 = previous month, -2 = 2 months prior, etc.  
+STATUS column: 0 = 1-29 days past due, 1 = 30-59 days past due, 2 = 60-89 days overdue, 3 = 90-119 days overdue, 4 = 120-149 days overdue, 5 = Overdue or bad debts, write-offs for more than 150 days, C = paid off that month,  X = No loan for the month
+```{r view-df-cr, echo=FALSE}
+kable(sapply(df.cr, class), col.names="type")
+# [NOTE FOR RMD] Convert ID to factor
+head(df.cr) %>% kable()
+# [NOTE FOR RMD] Add explanation for interpretation of MONTHS_BALANCE, STATUS columns
+```
+
+## Clean Data
+### Cleaning application_record.csv
+Remove duplicate IDs from application_record.csv
+```{r clean-df-ar, collapse=TRUE, cache=TRUE}
+df.ar$ID %>% unique() %>% length()
+
+duplicates <- df.ar %>% group_by(ID) %>% summarise(count = n()) %>% filter(count > 1)
+df.ar.mod <- df.ar %>% filter(!ID %in% duplicates$ID)
+
+df.ar.mod$ID %>% unique() %>% length()
+```
+
+### Cleaning credit_record.csv
+The original dataset was made available on 2020-03-24, so it is presumed current month is March 2020. 
+From months_balance we create 2 new columns indicating the month and year for each observation. Observations older than 2 years are removed.
+
+Each ID is assigned a "good" or "bad" customer status according to their credit history. If the customer paid off their balance in under 60 days (STATUS = 0, 1, or C) for more than 50% of their balance history, they are determined to be a "good" customer, otherwise they are determined to be a "bad" customer.
+```{r clean-df-cr, include=TRUE, cache=TRUE}
+# Extract month and year from months_balance in df.cr
+df.cr$month_balance <- format(as.Date("2020-03-24") %m+% months(df.cr$MONTHS_BALANCE), "%B")
+df.cr$year_balance <- format(as.Date("2020-03-24") %m+% months(df.cr$MONTHS_BALANCE), "%Y") %>% as.integer(.)
+
+# Remove records older than 2 years
+df.cr.mod <- df.cr %>% filter(MONTHS_BALANCE > -24)
+
+# Assign customer status
+df.status <- df.cr.mod %>%
+  group_by(ID) %>%
+  summarise(cnt_status_good = length(STATUS[STATUS==0|STATUS==1|STATUS=='C']), 
+            cnt_status_bad = n() - cnt_status_good, 
+            percent_good = round(cnt_status_good / n() * 100),
+            percent_bad = round(cnt_status_bad / n() * 100)) %>%
+  mutate(
+    customer_status_good = ifelse(percent_good >= 50, 1, 0)
+  ) %>%
+  select(ID, customer_status_good, percent_good)
+
+df.status$customer_status_good <- as.factor(df.status$customer_status_good)
+```
+
+### Join datasets
+The two cleaned datasets are joined and only records where IDs exist in both are kept.
+
+Cleaning steps undertaken include: ... [ACTION NEEDED HERE]
+```{r join-datasets, include=TRUE, cache=TRUE}
+
+df.cc.raw <- inner_join(x = df.status, y = df.ar.mod, by = "ID") %>%
+  mutate(ID = as.factor(ID),
+         CNT_FAM_MEMBERS = as.integer(CNT_FAM_MEMBERS),
+         age_years = as.numeric(round(DAYS_BIRTH * (-1) / 365.25), 0),         # instead of DAYS_BIRTH
+         work_years = as.numeric(round((DAYS_EMPLOYED * (-1) / 365.25), 0)),   # instead of DAYS_EMPLOYED, negative: Pensioner
+         FLAG_MOBIL = as.factor(FLAG_MOBIL),
+         FLAG_WORK_PHONE = as.factor(FLAG_WORK_PHONE),
+         FLAG_PHONE = as.factor(FLAG_PHONE),
+         FLAG_EMAIL = as.factor(FLAG_EMAIL))
+
+# Change column names to lower case
+setnames(df.cc.raw, tolower(names(df.cc.raw)))
+
+# Look at the factor levels
+df.cc.raw %>% 
+  select(-id) %>% 
+  select_if(is.factor) %>%
+  sapply(., FUN = levels)
+
+# flag_mobil = 1 for all IDs => exclude from final dataset
+
+# occupation_type has "" level => replace with NA
+levels(df.cc.raw$occupation_type)[levels(df.cc.raw$occupation_type)==""] <- "NA"
+# df.cc.raw$occupation_type %>% table()                                        # check that "" are updated as NA
+
+# Set order of levels in education type
+df.cc.raw$name_education_type <- factor(df.cc.raw$name_education_type, levels=c("Lower secondary", "Secondary / secondary special", "Incomplete higher", "Higher education", "Academic degree"), ordered = TRUE)
+
+# Convert -ve values to NA
+df.cc.raw$work_years[df.cc.raw$work_years == '-1000'] <- NA
+
+# Select columns
+# months_balance, days_birth, days_employed and flag_mobil columns are excluded
+df.cc <- df.cc.raw %>%
+  select(id,
+         code_gender,
+         age_years,
+         name_education_type,
+         name_income_type,
+         name_housing_type,
+         name_family_status,
+         cnt_children,
+         cnt_fam_members,
+         flag_own_car,
+         flag_own_realty,
+         work_years,
+         amt_income_total,
+         occupation_type,
+         flag_work_phone,
+         flag_phone,
+         flag_email,
+         customer_status_good,
+         percent_good)
+
+```
+
+Remove additional duplicates. Even tough entries have different ID's, all the other
+columns are the same. That's why we only keep the unique ID's, which also have uniqueness
+in all the other columns.
+
+```{r remove-dupes, cache=TRUE}
+df.cc <- df.cc[!duplicated(df.cc[c(2:17)]),]
+
+# remove NA-values
+df.cc <- na.omit(df.cc)
+```
+
+### Check Final Dataframe
+```{r summary-df-cc, include=TRUE, collapse=TRUE}
+# Meta information from df.cc
+nlevels(df.cc$id)
+
+str(df.cc)
+
+head(df.cc) %>% kable()
+
+df.cc %>%
+  inspect_cat() %>%
+  show_plot()
+```
+
+## Graphical Analysis 
+We would expect amt_income_total to have the strongest impact on percent_good or customer_status_good, respectively creditworthiness. We are also interested in seeing if variables such as code_gender, work_years, age_years, and name_education_type have a significant impact on the target variables.
+
+### Overview of all the different variables
+To have a first overview of the expected most important variables (percent_good, amt_income_total, code_gender, age_years, work_years), we plot them with ggpairs. After the first plot, we realize that gender does not make a significant difference for our target variable. Later on we can confirm this observation. This is why we show the plots with cnt_children and flag_own_realty instead. Since our dataset consists of many categorical variables, we additionaly adjust the argument color in each further plot with one of this variables.
+```{r ggpairs expected most important variables 1, message=FALSE}
+# colors for the different genders
+ggpairs(data = df.cc, legend = 1,
+        columns = c("percent_good", "amt_income_total", "cnt_children", "age_years", "work_years"),
+        proportions = "auto",
+        mapping = aes(color = code_gender, alpha = 0.5)) +
+  
+  theme(legend.position = "bottom",
+        legend.title=element_text(size=9),
+        legend.text=element_text(size=7.5))
+```
+
+```{r ggpairs expected most important variables 2, echo=FALSE, message=FALSE}
+# colors for the different genders
+ggpairs(data = df.cc, legend = 1,
+        columns = c("percent_good", "amt_income_total", "cnt_children", "age_years", "work_years"),
+        proportions = "auto",
+        mapping = aes(color = code_gender, alpha = 0.5)) +
+  
+  theme(legend.position = "bottom",
+        legend.title=element_text(size=9),
+        legend.text=element_text(size=7.5))
+
+
+# colors for the different education types
+ggpairs(data = df.cc, legend = 1,
+        columns = c("percent_good", "amt_income_total", "cnt_children", "age_years", "work_years"),
+        proportions = "auto",
+        mapping = aes(color = name_education_type, alpha = 0.5)) +
+  
+  theme(legend.position = "bottom",
+        legend.title=element_text(size=9),
+        legend.text=element_text(size=7.5))
+
+
+# colors for the different income types plus flag_own_realty
+ggpairs(data = df.cc, legend = 1,
+        columns = c("percent_good", "amt_income_total", "flag_own_realty", "age_years", "work_years"),
+        proportions = "auto",
+        mapping = aes(color = name_income_type, alpha = 0.5)) +
+  
+  theme(legend.position = "bottom",
+        legend.title=element_text(size=9),
+        legend.text=element_text(size=7.5))
+
+
+# colors for the different housing types
+ggpairs(data = df.cc, legend = 1,
+        columns = c("percent_good", "amt_income_total", "flag_own_realty", "age_years", "work_years"),
+        proportions = "auto",
+        mapping = aes(color = name_housing_type, alpha = 0.5)) +
+  
+  theme(legend.position = "bottom",
+        legend.title=element_text(size=9),
+        legend.text=element_text(size=7.5))
+#### missing plot occupation_type - too many levels
+```
+
+### Boxplots for categorical variables
+To see more details, we made for several categorical variables boxplots.
+```{r Boxplots for categorical variables, echo=FALSE, message=FALSE}
+ggplot(df.cc, aes(x=code_gender, y=percent_good)) + 
+  geom_boxplot()  # no difference between the genders
+
+ggplot(df.cc, aes(x=name_education_type, y=percent_good)) + 
+  geom_boxplot()  # interesting Academic
+
+ggplot(df.cc, aes(x=name_income_type, y=percent_good)) + 
+  geom_boxplot()  # interesting Student
+
+ggplot(df.cc, aes(x=name_housing_type, y=percent_good)) + 
+  geom_boxplot() # interesting
+
+ggplot(df.cc, aes(x=flag_own_realty, y=percent_good)) + 
+  geom_boxplot()
+
+ggplot(df.cc, aes(x=as.factor(cnt_children), y=percent_good)) + 
+  geom_boxplot() # interesting
+
+ggplot(df.cc, aes(x=occupation_type, y=percent_good)) + 
+  geom_boxplot() +
+  theme(text = element_text(size = 8))
+```
+
+### LM
+Check mean percentage good of all observations and test against amt_income_total.
+```{r LM simple model, message=FALSE}
+lm.cc.0 <- lm(percent_good ~ 1, data = df.cc)
+summary(lm.cc.0)
+# mean(df.cc$percent_good)
+
+lm.cc.1 <- lm(percent_good ~ amt_income_total, data = df.cc)
+summary(lm.cc.1)
+
+anova(lm.cc.0, lm.cc.1)
+```
+
+Add further variables to the LM and again test against less complex models.
+```{r LM - checking variable importance - global F-test, message=FALSE}
+lm.cc.2 <- update(lm.cc.1, . ~ . + code_gender + age_years + work_years + name_education_type +
+                    name_income_type + name_housing_type + name_family_status + cnt_children +
+                    cnt_fam_members + flag_own_car)
+drop1(lm.cc.2, test = "F")
+
+lm.cc.3 <- update(lm.cc.2, . ~ . + flag_own_realty) # signif. p-val
+drop1(lm.cc.3, test = "F")
+
+lm.cc.4 <- update(lm.cc.3, . ~ . + occupation_type) # signif. p-val
+drop1(lm.cc.4, test = "F")
+
+# Global F-Test
+anova(lm.cc.0, lm.cc.4)
+```
+
+Considering the results of the ANOVA test, there is no evidence that one of the predictors plays a relevant role for our target variable.
+
+### GLM Poisson
+For our GLM Poisson model we created the data frame "df.poisson" to get count data out of the original raw data as dependent variable. Therefore we have a closer look to the different status in the data set during the period of 24 months. The target variable in this model is status_count for the status X, C, 0, 1, 2, 3, 4, 5. For performance reasons, i.e. model creation takes very long with the whole data set, the data set is reduced by half using the caret function "createDataPartitioning".
+
+#### Data Set for Poisson
+```{r Data Prep Poisson, include=FALSE, message=FALSE}
+# Join datasets where ID match exists
+df.poisson.raw <- inner_join(x = df.cr.mod, y = df.ar.mod, by = "ID") %>%
+  mutate(ID = as.factor(ID),
+         CNT_CHILDREN = as.integer(CNT_CHILDREN),
+         CNT_FAM_MEMBERS = as.integer(CNT_FAM_MEMBERS),
+         age_years = as.numeric(round(DAYS_BIRTH * (-1) / 365.25), 0),         # instead of DAYS_BIRTH
+         work_years = as.numeric(round((DAYS_EMPLOYED * (-1) / 365.25), 0)),   # instead of DAYS_EMPLOYED, negative: Pensioner or unemployed
+         FLAG_MOBIL = as.factor(FLAG_MOBIL),
+         FLAG_WORK_PHONE = as.factor(FLAG_WORK_PHONE),
+         FLAG_PHONE = as.factor(FLAG_PHONE),
+         FLAG_EMAIL = as.factor(FLAG_EMAIL),
+         STATUS = as.factor(STATUS),
+         MONTHS_BALANCE = as.factor(MONTHS_BALANCE))
+
+# Change column names to lower case
+setnames(df.poisson.raw, tolower(names(df.poisson.raw)))
+
+# Look at the factor levels
+df.poisson.raw %>% 
+  select(-id) %>% 
+  select_if(is.factor) %>%
+  sapply(., FUN = levels)                                                      # alternatively: FUN=table
+
+# flag_mobil = 1 for all IDs => exclude from final dataset
+
+# occupation_type has "" level => replace with NA
+levels(df.poisson.raw$occupation_type)[levels(df.poisson.raw$occupation_type)==""] <- "NA"
+# df.poisson.raw$occupation_type %>% table()                                        # check that "" are updated as NA
+
+# Convert -ve values to NA
+df.poisson.raw$work_years[df.poisson.raw$work_years == '-1000'] <- NA
+
+# Selecting columns
+# [NOTE FOR RMD] months_balance, days_birth, days_employed and flag_mobil columns are excluded
+df.poisson.raw2 <- df.poisson.raw %>%
+  select(id,
+         code_gender,
+         age_years,
+         name_education_type,
+         name_income_type,
+         name_housing_type,
+         name_family_status,
+         cnt_children,
+         cnt_fam_members,
+         flag_own_car,
+         flag_own_realty,
+         work_years,
+         amt_income_total,
+         occupation_type,
+         flag_work_phone,
+         flag_phone,
+         flag_email,
+         status,
+         months_balance)
+
+
+df.poisson.raw3 <- df.poisson.raw2 %>%
+  group_by(code_gender,
+           age_years,
+           name_education_type,
+           name_income_type,
+           name_housing_type,
+           name_family_status,
+           cnt_children,
+           cnt_fam_members,
+           flag_own_car,
+           flag_own_realty,
+           work_years,
+           amt_income_total,
+           occupation_type,
+           flag_work_phone,
+           flag_phone,
+           flag_email,
+           status,
+           months_balance) %>%
+  summarize(status_count = n()) %>%  
+  select(status_count,
+         code_gender,
+         age_years,
+         name_education_type,
+         name_income_type,
+         name_housing_type,
+         name_family_status,
+         cnt_children,
+         cnt_fam_members,
+         flag_own_car,
+         flag_own_realty,
+         work_years,
+         amt_income_total,
+         occupation_type,
+         flag_work_phone,
+         flag_phone,
+         flag_email,
+         status,
+         months_balance)
+
+df.poisson.raw3$status <- factor(df.poisson.raw3$status, levels = c("X", "C", "0", "1", "2", "3", "4", "5"))
+
+df.poisson.raw3 <- na.omit(df.poisson.raw3)
+
+poisson.reduction <- createDataPartition(df.poisson.raw3$status_count, p = 0.5, list = FALSE)
+
+df.poisson <- df.poisson.raw3[poisson.reduction, ]
+
+df.barplot <- df.poisson %>% 
+  group_by(status) %>% 
+  summarize(status_counted = sum(status_count))
+```
+
+```{r Overview df.poisson}
+head(df.poisson) %>% kable()
+```
+
+#### Data Visualization for Poisson
+```{r Visualization number of occurrences per category, message=FALSE}
+ggplot(df.barplot, aes(x = status, y = status_counted)) + 
+    geom_bar(stat = "identity") +
+    geom_text(aes(label = status_counted), vjust = -0.3, size = 3, colour = "black")
+```
+
+```{r Visualization mean number of occurrences per category, message=FALSE}
+df.poisson %>% 
+  group_by(months_balance, status) %>% 
+  summarize(status_counted = sum(status_count)) %>% 
+  ggplot(aes(x = status, y = status_counted)) + 
+  geom_boxplot() +
+  stat_summary(fun=mean, geom="point", shape=18, size=3, color="blue")
+```
+In the boxplot we can observe that the variability of count_status, i.e. count per status in the period of 24 months, increases with the mean value of every status. This behavior is typical for count data and therefore poisson models are suitable to analyze them.
+
+Since we examine a different dependent variable for customer creditworthiness in the poisson model than we did in the LM section earlier, we start over again when reviewing the relevant independent variables. The dependent variable status_count depends on the variable status. What we want to know is, if other variables influence status. Therefore we include interaction into our model, starting again with those predictors that we believe have influence.
+```{r GLM poisson model 1 to 3, message=FALSE}
+glm.1 <- glm(status_count ~ status,
+             family = "poisson",
+             data = df.poisson)
+summary(glm.1)
+
+glm.2 <- update(glm.1, . ~ . * amt_income_total)
+summary(glm.2)
+
+glm.3 <- glm(status_count ~ status * (amt_income_total + code_gender + age_years + name_education_type + name_income_type + name_housing_type + name_family_status + cnt_children + cnt_fam_members + flag_own_car + flag_own_realty + work_years + occupation_type), 
+             family = "poisson", 
+             data = df.poisson)
+summary(glm.3)
+formula(glm.2)
+formula(glm.3)
+```
+No overdispersion could be detected in models 1 to 3, for this reason we stay with the Poisson model and do not change to quasipoisson.
+
+#### Check for most Important Variables in the GLM Poisson
+With the varImp function from the package caret, we now examine which predictors are the most important in our GLM Poisson model. We investigate the variable importance in our most complex model glm.3.
+```{r varImp, message=FALSE}
+imp <- as.data.frame(varImp(glm.3))
+imp <- data.frame(names   = rownames(imp),
+                  overall = imp$Overall)
+imp[order(imp$overall,decreasing = TRUE),]
+```
+
+#### Creating a model based on the most Important Variables
+We create a model based on the five most important variables previously identified.
+```{r GLM poisson with selected variables, message=FALSE}
+glm.4 <- glm(status_count ~ amt_income_total + status:age_years + status:code_gender + occupation_type + status:work_years,
+             family = "poisson",
+             data = df.poisson)
+summary(glm.4)
+```
+
+#### Performance Check of the GLM Poisson models
+```{r Performance GLM poisson, echo=FALSE, message=FALSE}
+compare_performance(glm.1, glm.2, glm.3, glm.4, rank = TRUE)
+```
