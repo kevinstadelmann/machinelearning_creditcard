@@ -4,12 +4,20 @@
   background-color: #F5F5F5;  
   opacity: 0.6;  
   font-family: Calibri;  
-  font-size: 20px;  
+  font-size: 16px;  
+}
+h4.author { 
+  font-size: 16px;
+  font-family: Calibri;  
+}
+h4.date { 
+  font-size: 16px;
+  font-family: Calibri;  
 }
 #TOC {  
   color: #708090;  
   font-family: Calibri;  
-  font-size: 16px;  
+  font-size: 14px;  
   border-color: #708090;  
 }  
 body {  
@@ -23,5 +31,8 @@ pre {
 } 
 h1, h2, h3 {
   color: #008b8b;
+  font-family: Calibri;  
+  font-size: 15px;  
+  font-weight: bold;
 }
 </style>  
