@@ -567,7 +567,7 @@ Comparing the in-sample R^2 values with the outer-sample R^2 values, we see that
 
 # GAM
 
-# SVP
+# SVM
 
 # Neural Networks
 
@@ -576,13 +576,26 @@ The distinction between good and bad customer is a way to build up a relatively 
   
 Potential options to increase earnings through optimization include:  
   
-1. Granting credit cards to a percentage of "bad" applicants  
+<b>1. Granting credit cards to a percentage of "bad" applicants</b> <br>
 This adds a marginally higher risk to the portfolio of credit card customers, however, comes with higher possible returns.  
   
-2. Allocating credit limits  
+<b> 2. Allocating credit limits  </b> <br>
 Determining the credit limit to allow an applicant/customer based on their likelihood to repay (i.e. "percent_good") in order to maximize interest paid, thereby increasing earnings.  
   
-3. Mark's Option...  
+<b> 3. Dunning</b> <br>
+It is lucrative for credit card companies when customers do not immediately repay the loan amounts they borrow. Depending on the agreed contract, the companies can claim additional fees and penalty interest from a certain point. The dunning system should take this into account and not dun the customer too early or the full amount as overdue. However, it should be noted that the later the reminder is issued, the greater the likelihood of a credit default (untested assumption). It is therefore appropriate to demand regular partial payments.
+
+To optimize (maximize) the profit of a credit card company the following <b>simplified</b> formular could be applied:
+
+<b>Maximize $g(x,y) =$ “loan amount” $\cdot$ “interest rate” $\cdot \frac{x}{360} +$ “additional fees” $–$ “loan amount” $\cdot$ “probability of default”$(x,y)$</b>
+
+Control variables: <br>
+$x =$ days until dunning letter will be sent<br>
+$y =$ amount of partial payment
+
+Probability of default is another function based on $x$ and $y$. The higher the value of $x$ and the lower the value of $y$, it can be assumed that the probability of default will be increased.
+
+Constraints are defined based on the agreed contracts between the company and the customers. For example, there it can be defined the minimum days until an amount is overdue (e.g. $x >=$ 30 days).
 
 # Session Information
 ```{r session-info}
