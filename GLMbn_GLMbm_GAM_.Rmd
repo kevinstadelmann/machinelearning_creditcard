@@ -270,7 +270,7 @@ ilogit(coef(glm.binom3)["amt_income_total"])
 ```
 Only the predictor amt_income_total seems to play a significant role. If we increase this variable by one unit, we will have an increase of the proportion of good customers also by almost 1.
 
-When interaction between all variables is included, it is interesting to see that it plays a significant role, e.g. there is strong evidence of interaction for amt_income_total and work_years as well as for amt_income_total and cnt_children. P-values of interaction between other variables show also significance.
+When interaction between all variables is included, it is interesting to see that it plays a significant role, e.g. there is strong evidence of interaction for amt_income_total and work_years as well as for amt_income_total and cnt_children. P-values of interaction between other variables show significance too. Also the pairs plot shows that there is interaction between different variables.
 
 If the categorical variable occupation_type is added to income, income is no longer significant as a predictor, but occupation_type itself shows a significant p-value (checked with drop1).
 ```{r adding categorical variables, include=FALSE, message=FALSE}
@@ -305,7 +305,25 @@ ggplot(data = df.cc,
   geom_point(col = "blue", 
              size = 1)
 ```
+For the GLM binomial model there is in general little evidence that the predictors have significant influence. When visualizing the results we can see that we have not very much observation at the upper end of the amt_income_total scale. This makes us doubt the validity of the results. It makes little sense that although those observations with the highest income are between 75% and 100% of the dependent variable good_customer_rate, the predicted variables show a downward trend.
 
+
+### GAM Model
+For the GAM model we use the response variable percent_good, which is the percentage of good customers in our data. We start again with a basic model in which amt_income_total is the predictor.
+```{r GAM 1, message=FALSE}
+gam.cc.1 <- gam(percent_good ~ amt_income_total,
+                data = df.cc)
+summary(gam.cc.1)
+```
+
+
+```{r GAM 2 to 4, message=FALSE}
+
+```
+
+```{r message=FALSE}
+
+```
 
 ```{r message=FALSE}
 
