@@ -34,6 +34,8 @@ library(ggplot2)
 library(GGally)
 library(gridExtra)
 library(car)
+library(nnet)
+library(ROCR)
 
 opts_chunk$set(fig.align="center", echo=TRUE)
 knit_hooks$set(inline=function(x) { prettyNum(x, big.mark=",") })
@@ -570,6 +572,107 @@ Comparing the in-sample R^2 values with the outer-sample R^2 values, we see that
 # SVM
 
 # Neural Networks
+
+## Build the network
+
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE, include=TRUE}
+set.seed(1400)
+
+# Work with copy of df.cc
+df.ann <- cbind(df.cc)
+
+# Standardize
+df.ann$log_amt_income_total <- log(df.ann$amt_income_total)
+
+## Only get needed columns for model
+keeps <- c(
+          "customer_status_good"
+          ,"code_gender"
+          ,"age_years"
+          ,"name_education_type"
+          ,"name_income_type"
+          ,"name_housing_type"
+          ,"name_family_status"
+           ,"cnt_fam_members"
+          ,"flag_own_car"
+          ,"flag_own_realty"
+          , "log_amt_income_total"
+          ,"occupation_type"
+           )
+
+df.ann <- df.ann[keeps]
+
+
+# Split data into train and test data sets
+intrain <- createDataPartition(y = df.ann$customer_status_good,
+                               p=0.65,
+                               list = FALSE)
+df.ann.training <- df.ann[intrain,]
+df.ann.testing <- df.ann[-intrain,]
+
+# Fit model
+df.ann.net <- nnet(customer_status_good ~ ., data = df.ann.training, size=15, maxit=500, range=0.1, decay=5e-4, MaxNWts = 10000, trace = FALSE)
+```
+
+The model is designed as 41-15-1 network with 646 weights. 11 predictors were added to the model, but it works in total with 41 predictors as some of the variables are factors, which will be converted to dummy variables (0/1 values).
+
+
+
+## Make Predictions
+
+
+```{r}
+pred <- predict(df.ann.net, df.ann.testing, type="class")
+cm_nn <- table(pred=pred, true=df.ann.testing$customer_status_good)
+cm_nn
+```
+
+Calculating the accuracy
+
+```{r}
+sum(diag(cm_nn))/sum(sum(cm_nn))
+```
+
+Percentage of identified 'bad' customers
+
+```{r}
+cm_nn[1, 1]/(cm_nn[1, 1] + cm_nn[2, 1])
+```
+
+```{r}
+cm_nn[1, 1] + cm_nn[2, 1]
+```
+
+
+The accuracy indicates a good score (`r sum(diag(cm_nn))/sum(sum(cm_nn))`). However, simply predict all customers as good customers would lead to a even higher accurary (approx. 0.84). The model has issues to identify bad customers. It identifies `r cm_nn[1, 1] + cm_nn[1, 2]` bad customers, but most of them are in fact good customers. Out of the `r cm_nn[1, 1] + cm_nn[2, 1]` 'real' bad customers  the model identifies only `r cm_nn[1, 1]`.
+
+
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE, include=TRUE}
+# Tune nnet with function for different size of neurons
+x <- c()
+for (i in 1:25) {
+  df.ann.net <- nnet(customer_status_good ~ ., data = df.ann.training, size=i, maxit=100, range=0.1, decay=5e-4, MaxNWts = 10000, trace = FALSE)
+  pred <- predict(df.ann.net, df.ann.testing, type="class")
+  cm_nn <- table(pred=pred, true=df.ann.testing$customer_status_good)
+  s <- sum(diag(cm_nn))/sum(sum(cm_nn))
+  x <- append(x, s)
+}
+plot(x, main="Tune nnet - Count of Neurons", ylab= "Accuracy", xlab = "Count of Neurons")
+
+
+```
+
+This function helps to tune the amount of neurons for the model. However, there is no model, which helps to find a high accuracy and is able to identify bad customers well.
+
+Importance of the predictors
+```{r}
+df.ann.net.imp <- varImp(df.ann.net)
+df.ann.net.imp <- df.ann.net.imp[order(-df.ann.net.imp$Overall),, drop = FALSE]
+head(df.ann.net.imp, 10)
+
+```
+
+This table shows the importance of the different predictors (list of top 10 out of 41). This output should not be overinterpreted as the model itself is not suitable to identify bad customers.
 
 # Optimization
 The distinction between good and bad customer is a way to build up a relatively safe portfolio of customers, who repay their debts with the interest. However, the defined threshold leaves room for optimization.  
