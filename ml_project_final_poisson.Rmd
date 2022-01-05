@@ -1,0 +1,365 @@
+---
+title: "Machine Learning Project - Poisson"
+author: "Jeanette Lee"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_document:
+    css: styles.css
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+    number_sections: true
+---
+
+# Setup
+```{r setup, include=TRUE, warning=FALSE, message=FALSE}
+library(magrittr)
+library(data.table)
+library(dplyr)
+library(lubridate)
+library(caret)
+library(knitr)
+library(inspectdf)
+library(ggplot2)
+library(GGally)
+library(gridExtra)
+library(car)
+#library(multcomp)
+
+opts_chunk$set(fig.align="center", echo=TRUE)
+knit_hooks$set(inline=function(x) { prettyNum(x, big.mark=",") })
+```
+
+# Data Preparation
+## Data Import
+```{r import-data, include=TRUE, cache=TRUE}
+df.ar <- fread("data/application_record.csv", stringsAsFactors = TRUE)
+df.cr <- fread("data/credit_record.csv", stringsAsFactors = TRUE)
+```
+
+## View Data
+### Application Record Dataframe
+This dataset includes the demographic data of applicants.  
+- DAYS_BIRTH and DAYS_EMPLOYED columns count backwards from "current" day (0), yesterday (-1), etc.  
+- DAYS_EMPLOYED is positive, if the person is currently unemployed
+
+**Data Summary**
+```{r datatypes-df-ar, echo=FALSE}
+#kable(sapply(df.ar, class), col.names="type")
+str(df.ar)
+```
+**Sample of Dataset**
+```{r view-df-ar, echo=FALSE}
+head(df.ar) %>% kable()
+```
+
+### Credit Record Dataframe
+This dataset includes the historical data of user behaviour.  
+- MONTHS_BALANCE column counts backward from "current" month (0), previous month (-1), 2 months prior (-2), etc.  
+- STATUS column: 0 = 1-29 days past due, 1 = 30-59 days past due, 2 = 60-89 days overdue, 3 = 90-119 days overdue, 4 = 120-149 days overdue, 5 = overdue or bad debts, write-offs for more than 150 days, C = paid off that month, X = no loan for the month
+  
+**Data Summary**
+```{r datatypes-df-cr, echo=FALSE}
+#kable(sapply(df.cr, class), col.names="type")
+str(df.cr)
+```
+**Sample of Dataset**
+```{r view-df-cr, echo=FALSE}
+head(df.cr) %>% kable()
+```
+
+## Cleaning and Joining Datasets
+### Cleaning application_record.csv
+Removed duplicate IDs from application_record.csv
+```{r clean-df-ar, include=TRUE, collapse=TRUE}
+duplicates <- df.ar %>% group_by(ID) %>% summarise(count = n()) %>% filter(count > 1)
+df.ar.mod <- df.ar %>% filter(!ID %in% duplicates$ID)
+```
+
+### Cleaning credit_record.csv
+The original dataset was made available on 24-03-2020, so it is presumed "current" month is March 2020. From months_balance we create a new column indicating the month for each observation. Observations older than 2 years are removed.  
+  
+Each ID is assigned a "good" or "bad" customer status according to their credit history. If the customer paid off their balance in under 60 days (STATUS = 0, 1, or C) for more than 50% of their balance history, they are determined to be a "good" customer, otherwise they are determined to be a "bad" customer. Additionally, the percentage of times the customer paid off their balance in 60 days is added to the dataset as "percent_good".
+```{r clean-df-cr, include=TRUE}
+# Extract month and year from months_balance in df.cr
+df.cr$month_balance <- format(as.Date("2020-03-24") %m+% months(df.cr$MONTHS_BALANCE), "%B")
+
+# Remove records older than 2 years
+df.cr.mod <- df.cr %>% filter(MONTHS_BALANCE > -24)
+
+# Assign customer status
+df.status <- df.cr.mod %>% group_by(ID) %>%
+  summarise(cnt_status_good = length(STATUS[STATUS==0|STATUS==1|STATUS=='C']), 
+            cnt_status_bad = n() - cnt_status_good,
+            percent_good = round(cnt_status_good / n() * 100)) %>%
+  mutate(customer_status_good = ifelse(percent_good >= 50, 1, 0)) %>%
+  select(ID, customer_status_good, percent_good, cnt_status_good, cnt_status_bad)
+
+df.status$customer_status_good <- as.factor(df.status$customer_status_good)
+```
+
+### Join datasets
+The two cleaned datasets are joined and only records where IDs exist in both are kept.
+
+Cleaning steps undertaken include:  
+- converting columns to numeric (e.g. age_years from DAYS_BIRTH)  
+- changing column names to lower case  
+- remove outliers/fringe cases (cnt_fam_members > 7; as a result also removes cnt_children > 5)  
+- combining factor levels  
+- replacing null and negative values  
+```{r join-datasets, include=TRUE}
+df.cc.raw <- inner_join(x = df.status, y = df.ar.mod, by = "ID") %>%
+  mutate(ID = as.factor(ID),
+         CNT_FAM_MEMBERS = as.integer(CNT_FAM_MEMBERS),
+         age_years = as.numeric(round(DAYS_BIRTH * (-1) / 365.25), 0),       # days -> years
+         work_years = as.numeric(round((DAYS_EMPLOYED * (-1) / 365.25), 0)), # days -> years
+         FLAG_MOBIL = as.factor(FLAG_MOBIL),
+         FLAG_WORK_PHONE = as.factor(FLAG_WORK_PHONE),
+         FLAG_PHONE = as.factor(FLAG_PHONE),
+         FLAG_EMAIL = as.factor(FLAG_EMAIL))
+
+setnames(df.cc.raw, tolower(names(df.cc.raw)))   # change column names to lower case
+```
+```{r view-levels, eval=FALSE}
+df.cc.raw %>% select(-id) %>% select_if(is.factor) %>% sapply(., FUN = table)
+table(df.cc.raw$cnt_fam_members)
+table(df.cc.raw$cnt_children)
+```
+```{r join-datasets-2, include=TRUE}
+df.cc.raw <- df.cc.raw[df.cc.raw$cnt_fam_members < 7, ]
+
+# combine 'Academic degree' with 'Higher education' and set order of levels in education type
+df.cc.raw$name_education_type <- recode_factor(df.cc.raw$name_education_type, "Academic degree" = "Higher education")
+df.cc.raw$name_education_type <- factor(df.cc.raw$name_education_type, levels=c("Lower secondary", "Secondary / secondary special", "Incomplete higher", "Higher education"), ordered = TRUE)
+
+df.cc.raw$work_years[df.cc.raw$work_years == '-1000'] <- NA                  # -ve = pensioner
+levels(df.cc.raw$occupation_type)[levels(df.cc.raw$occupation_type)==""] <- "NA"
+
+# select columns (exclude months_balance, days_birth, days_employed and flag_mobil)
+df.cc <- df.cc.raw %>%
+  select(id, 
+         code_gender,
+         age_years,
+         name_education_type,
+         name_income_type,
+         name_housing_type,
+         name_family_status,
+         cnt_children,
+         cnt_fam_members,
+         flag_own_car,
+         flag_own_realty,
+         work_years,
+         amt_income_total,
+         occupation_type,
+         flag_work_phone,
+         flag_phone,
+         flag_email,
+         customer_status_good,
+         percent_good,
+         cnt_status_good, 
+         cnt_status_bad)
+```
+
+### Remove duplicates and NA
+Some IDs appear to be the same individual (with different IDs) as all other columns are the same. We only keep one observation, removing duplicates.
+```{r remove-dupes}
+df.cc <- df.cc[!duplicated(df.cc[c(2:17)]),]
+df.cc <- na.omit(df.cc)                                                        # remove NA-values
+```
+```{r remove-df, include=FALSE}
+rm("df.ar", "df.ar.mod", "df.cc.raw", "df.cr", "df.cr.mod", "df.status", "duplicates")
+```
+
+### Check Final Dataframe
+**Data Summary**
+```{r summary-df-cc-str, echo=FALSE}
+str(df.cc)
+```
+**Sample of Dataset**
+```{r summary-df-cc-head, echo=FALSE}
+head(df.cc) %>% kable()
+```
+
+# START COPYING FROM HERE #
+
+# add to setup code chunk with hashtag #
+```{r}
+# library(multcomp) - Note: this package is needed in GLM Poisson Model contrast testing and is loaded there as it causes errors with use of the dplyr select() function
+```
+
+# replace the LM Model intro with this #
+The scope of this analysis is to be able to predict the percentage of times that an individual pays off their credit balance within 60 days.
+
+Note: while our dataset includes the continuous variable amt_income_total, which was initially chosen as the dependent variable for this method (and is possibly a more natural prediction based on the demographic data available in our dataset), we ultimately decided on percent_good due to it's more practical usage and tie-in to the other methods used here.
+
+# add to end of LM model #
+
+## Conclusions
+It was interesting to see that the majority of boxplots differed only in spread and not the median. This made it challenging to find and determine variables that would make good predictors for our chosen response variable, percent_good. With the number of variables in our dataset, a lot of time was spent in graphical analysis in an effort to narrow down the potential influencers. The analysis in this work has shown that demographic variables are, in this case, weak predictors of loan repayment.
+
+# Model: GLM (Poisson)
+Here we wish to predict the count of "good status", which counts the number of times where loans are repayed within 60 days (i.e. status = 0, 1, or C). In practice, it could be beneficial to predict different repayment statuses in order to find the right balance of interest repayed to optimize earnings.  
+  
+First we check our response variable cnt_status_good and see that it is not in the form of a bell curve (normal distribution), indicating that a normal Linear Model is not appropriate.
+```{r glm-p-hist, echo=FALSE}
+hist(df.cc$cnt_status_good)
+```
+  
+We also check the mean `r round(mean(df.cc$cnt_status_good), 2)` and variance `r round(var(df.cc$cnt_status_good), 2)`. As the variance is much greater than the mean, this suggests we will have over-dispersion in the model, suggesting a quasi-poisson model is more appropriate. We will start with a poisson model, regardless.
+
+## Graphical Analysis
+As we have here a different dependent variable than in for the Linear Model, we once again begin with graphical analysis of potential predictors against the response variable. Note: as we had previously determined in section 4.1.4, based on collinearity between cnt_fam_members and cnt_children, we exclude the latter variable in our analysis.  
+  
+From the plots below, it can be seen that name_income_type and  occupation_type seem to have differences among levels with respect to counts. The other plots we have hidden as there were no clear differences among levels.
+```{r glm-p-ga, echo=FALSE}
+p.template <- ggplot(data = df.cc, mapping = aes(y = cnt_status_good)) + geom_boxplot() + 
+  geom_text(aes(label = ..count..), y = -1, stat = "count", size = 3, color="darkcyan", angle = 50) + coord_cartesian(ylim=c(-2, 25))
+
+glm.plot.income <- p.template + aes(x = name_income_type) + theme(axis.text.x=element_text(angle=45, hjust=1)) + 
+  geom_hline(yintercept=mean(df.cc$cnt_status_good), color="red")
+
+glm.plot.occ <- p.template + aes(x = occupation_type) + theme(axis.text.x=element_text(angle=45, hjust=1)) + 
+  geom_hline(yintercept=mean(df.cc$cnt_status_good), color="red")
+
+grid.arrange(glm.plot.income, glm.plot.occ, ncol=2, widths=c(1, 2))
+```
+```{r glm-p-ga-hide, include=FALSE}
+p.template + aes(x = code_gender)
+p.template + aes(x = name_education_type)
+p.template + aes(x = name_housing_type)
+p.template + aes(x = name_family_status)
+p.template + aes(x = as.factor(cnt_fam_members))
+p.template + aes(x = flag_own_car)
+p.template + aes(x = flag_own_realty)
+p.template + aes(x = flag_work_phone)
+p.template + aes(x = flag_phone)
+p.template + aes(x = flag_email)
+```
+With name_income_type, we see that:  
+- pensioners have higher much median than other income types  
+- students have lowest variability, followed by pensioners  
+  
+For occupation_type:  
+- cooking staff & realty agents have lower median than other occupation types  
+- variability is not constant among groups; realty agents also have much lower variability  
+
+```{r glm-p-ga-continuous, include=FALSE}
+ggplot(data = df.cc, mapping = aes(y = cnt_status_good, x = age_years)) + geom_point()
+ggplot(data = df.cc, mapping = aes(y = cnt_status_good, x = amt_income_total)) + geom_point()
+ggplot(data = df.cc, mapping = aes(y = cnt_status_good, x = work_years)) + geom_point()
+```
+
+## Fit a Poisson Model
+Now we fit the model using a poisson model with both variables and look at the result summary.
+```{r glm-p-fit-both}
+fit.glm.p <- glm(cnt_status_good ~ name_income_type + occupation_type, 
+                 data = df.cc, family = poisson(link = "log"))
+tail(capture.output(summary(fit.glm.p)), 8)
+```
+Before interpreting the results, we check whether over- or under-dispersion exists. Here we confirm our initial suspicion that over-dispersion exists, since the *residual deviance* is greater than the degrees of freedom, meaning the estimates are correct, but the standard errors are not and thus unaccounted for by the model and we should use instead a *quasi-poisson* model:
+
+```{r glm-qp-fit-both}
+fit.glm.qp <- glm(cnt_status_good ~ name_income_type + occupation_type, 
+                  data = df.cc, family = quasipoisson(link = "log"))
+tail(capture.output(summary(fit.glm.qp)), 8)
+```
+We see that the dispersion parameter has now increased, while null deviance and residual deviance with their respective degrees of freedom have remained unchanged.
+
+## Test if variables play a role
+First, we start by testing the quasipoisson model with 2 predictor variables against a model that only includes the intercept.
+```{r glm-qp-intercept, include=FALSE}
+fit.glm.qp.0 <- update(fit.glm.qp, . ~ . - name_income_type - occupation_type)
+anova(fit.glm.qp.0, fit.glm.qp, test = "F")
+```
+```{r glm-qp-test-vars, eval=FALSE}
+fit.glm.qp.0 <- update(fit.glm.qp, . ~ . - name_income_type - occupation_type)
+anova(fit.glm.qp.0, fit.glm.qp, test = "F")
+```
+Here we saw weak evidence (not displayed) that at least one of the variables plays a role, so we compare the model with only the intercept against a quasi-poisson model that includes only one of the predictors. While we test both of our predictors, name_income_type and occupation_type, we show only one here.
+```{r glm-qp-test-income, include=FALSE}
+fit.glm.qp.income <- update(fit.glm.qp, . ~ . - occupation_type)
+```
+```{r glm-qp-test-occupation, echo=FALSE}
+fit.glm.qp.occupation <- update(fit.glm.qp, . ~ . - name_income_type)
+anova(fit.glm.qp.0, fit.glm.qp.occupation, test = "F")
+```
+From the outputs, we see there is weak evidence that occupation_type plays a role (above), however no evidence that name_income_type plays a role (not displayed), so we test again to compare a model with only occupation_type against the full model with both predictors.
+```{r glm-qp-test-both, echo=FALSE}
+anova(fit.glm.qp.occupation, fit.glm.qp, test = "F")
+```
+There is no evidence that the more complex model is better, so we stick with the quasi-poisson model that includes only occupation_type as the predictor and check with summary() to verify a quasipoisson model is needed. 
+
+```{r glm-p-fit-occupation, echo=FALSE}
+fit.glm.p.occupation <-  glm(cnt_status_good ~ occupation_type, data = df.cc, family = poisson(link = "log"))
+tail(capture.output(summary(fit.glm.p.occupation)), 8)
+```
+This is confirmed as over-dispersion is again evident for the poisson model cnt_status_good ~ occupation_type.
+
+## Interpreting the coefficients
+As the function *glm* takes the log, we remember to reverse this when interpreting the coefficients. Thus, we see the expected number of counts in reference group "NA" is `r round(exp(coef(fit.glm.qp.occupation))["(Intercept)"], 0)`, which is confirmed in the boxplot above.  
+  
+Then we interpret the coefficients for the other groups.
+```{r glm-qp-fit-estimates, echo=FALSE}
+coef.est.occupation <- c(round(exp(coef(fit.glm.qp.occupation))["occupation_typeAccountants"], 3),
+                     round(exp(coef(fit.glm.qp.occupation))["occupation_typeCleaning staff"], 3),
+                     round(exp(coef(fit.glm.qp.occupation))["occupation_typeCooking staff"], 3),
+                     round(exp(coef(fit.glm.qp.occupation))["occupation_typeCore staff"], 3),
+                     round(exp(coef(fit.glm.qp.occupation))["occupation_typeDrivers"], 3),
+                     round(exp(coef(fit.glm.qp.occupation))["occupation_typeHR staff"], 3),
+                     round(exp(coef(fit.glm.qp.occupation))["occupation_typeHigh skill tech staff"], 3),
+                     round(exp(coef(fit.glm.qp.occupation))["occupation_typeIT staff"], 3),
+                     round(exp(coef(fit.glm.qp.occupation))["occupation_typeLaborers"], 3),
+                     round(exp(coef(fit.glm.qp.occupation))["occupation_typeLow-skill Laborers"], 3),
+                     round(exp(coef(fit.glm.qp.occupation))["occupation_typeManagers"], 3),
+                     round(exp(coef(fit.glm.qp.occupation))["occupation_typeMedicine staff"], 3),
+                     round(exp(coef(fit.glm.qp.occupation))["occupation_typePrivate service staff"], 3),
+                     round(exp(coef(fit.glm.qp.occupation))["occupation_typeRealty agents"], 3),
+                     round(exp(coef(fit.glm.qp.occupation))["occupation_typeSales staff"], 3),
+                     round(exp(coef(fit.glm.qp.occupation))["occupation_typeSecretaries"], 3),
+                     round(exp(coef(fit.glm.qp.occupation))["occupation_typeSecurity staff"], 3),
+                     round(exp(coef(fit.glm.qp.occupation))["occupation_typeWaiters/barmen staff"], 3))
+
+names(coef.est.occupation) <- c("Accountants", "Cleaning staff", "Cooking staff", "Core staff", 
+                            "Drivers", "HR staff", "High skill tech staff", "IT staff", 
+                            "Laborers", "Low-skill Laborers", "Managers", "Medicine staff", 
+                            "Private service staff", "Realty agents", "Sales staff", "Secretaries",
+                            "Security staff", "Waiters/barmen staff")
+
+coef.est.occupation
+```
+As there are 19 levels, including the reference level, we will only include a few interpretations here.
+
+For coefficients < 1, this indicates that we expect to see *fewer* cnt_status_good (i.e. status=0, 1 or C) than the reference level "NA". For example,  
+- Accountants: `r (round(exp(coef(fit.glm.qp.occupation))["occupation_typeAccountants"], 3)-1)*(-100)`% fewer than "NA"  
+- Cleaning staff: `r (round(exp(coef(fit.glm.qp.occupation))["occupation_typeCleaning staff"], 3)-1)*(-100)`% fewer than "NA"  
+- Cooking staff: `r (round(exp(coef(fit.glm.qp.occupation))["occupation_typeCooking staff"], 3)-1)*(-100)`% fewer than "NA"  
+  
+For coefficients > 1, this indicates that we expect to see *more* cnt_status_good than the reference level "NA". For example:  
+- HR staff: `r (round(exp(coef(fit.glm.qp.occupation))["occupation_typeHR staff"], 3)-1)*100`% more than "NA"  
+- IT staff: `r (round(exp(coef(fit.glm.qp.occupation))["occupation_typeIT staff"], 3)-1)*100`% more than "NA"  
+- Secretaries: `r (round(exp(coef(fit.glm.qp.occupation))["occupation_typeSecretaries"], 3)-1)*100`% more than "NA"  
+
+## Test Contrasts
+As we had determined that occupation_type plays a role, we now test the hypothesis whether the levels "Realty agents" and "Cooking staff" significantly differ from the others.
+```{r glm-qp-test-contrasts, include=FALSE}
+occ.contrasts <- c(1/17, 1/17, 1/17, -1/2, 1/17, 1/17, 1/17, 1/17, 1/17, 1/17, 1/17, 1/17, 1/17, 1/17, -1/2, 1/17, 1/17, 1/17, 1/17)
+
+names(occ.contrasts) <- c("NA", "Accountants", "Cleaning staff", "Cooking staff", "Core staff", 
+                          "Drivers", "HR staff", "High skill tech staff", "IT staff", 
+                          "Laborers", "Low-skill Laborers", "Managers", "Medicine staff",
+                          "Private service staff", "Realty agents", "Sales staff", "Secretaries",
+                          "Security staff", "Waiters/barmen staff")
+
+library(multcomp)
+glht.cntgood <- glht(fit.glm.qp.occupation, linfct = mcp(occupation_type = occ.contrasts))
+```
+
+```{r glm-qp-contrast-summary, echo=FALSE}
+summary(glht.cntgood)
+```
+This confirms the hypothesis from the graphical analysis, that there is a slight difference between "Realty agents"/"Cooking staff" and the other occupation types.
+
+## Conclusions
+While there existed 2 count variables within our existing dataset (cnt_fam_members and cnt_children), predicting these variables served no practical purpose within the scope of our project. As the dependent variable in this case is correlated with the response variable from our linear model, the final model produced supports that occupation_type plays some role in repaying loans within 60 days.
