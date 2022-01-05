@@ -11,7 +11,6 @@
 
 <meta name="author" content="Jeanette Lee, Kevin Stadelmann, Marc Weber, Patricia Wellhöfer" />
 
-<meta name="date" content="2022-01-04" />
 
 <title>Machine Learning Project</title>
 
@@ -250,7 +249,7 @@ div.tocify {
 
 <h1 class="title toc-ignore">Machine Learning Project</h1>
 <h4 class="author">Jeanette Lee, Kevin Stadelmann, Marc Weber, Patricia Wellhöfer</h4>
-<h4 class="date">04 January 2022</h4>
+<h4 class="date">05 Januar 2022</h4>
 
 </div>
 
@@ -274,6 +273,8 @@ library(ggplot2)
 library(GGally)
 library(gridExtra)
 library(car)
+library(nnet)
+library(ROCR)
 
 opts_chunk$set(fig.align=&quot;center&quot;, echo=TRUE)
 knit_hooks$set(inline=function(x) { prettyNum(x, big.mark=&quot;,&quot;) })</code></pre>
@@ -1134,78 +1135,166 @@ predict.3.test &lt;- predict(object = lm.train.3, newdata = test_in)</code></pre
 <div id="gam" class="section level1" number="7">
 <h1 number="7"><span class="header-section-number">7</span> GAM</h1>
 </div>
-<div id="svp" class="section level1" number="8">
-<h1 number="8"><span class="header-section-number">8</span> SVP</h1>
+<div id="svm" class="section level1" number="8">
+<h1 number="8"><span class="header-section-number">8</span> SVM</h1>
 </div>
 <div id="neural-networks" class="section level1" number="9">
 <h1 number="9"><span class="header-section-number">9</span> Neural Networks</h1>
+<div id="build-the-network" class="section level2" number="9.1">
+<h2 number="9.1"><span class="header-section-number">9.1</span> Build the network</h2>
+<pre class="r"><code>set.seed(1400)
+
+# Work with copy of df.cc
+df.ann &lt;- cbind(df.cc)
+
+# Standardize
+df.ann$log_amt_income_total &lt;- log(df.ann$amt_income_total)
+
+## Only get needed columns for model
+keeps &lt;- c(
+          &quot;customer_status_good&quot;
+          ,&quot;code_gender&quot;
+          ,&quot;age_years&quot;
+          ,&quot;name_education_type&quot;
+          ,&quot;name_income_type&quot;
+          ,&quot;name_housing_type&quot;
+          ,&quot;name_family_status&quot;
+           ,&quot;cnt_fam_members&quot;
+          ,&quot;flag_own_car&quot;
+          ,&quot;flag_own_realty&quot;
+          , &quot;log_amt_income_total&quot;
+          ,&quot;occupation_type&quot;
+           )
+
+df.ann &lt;- df.ann[keeps]
+
+
+# Split data into train and test data sets
+intrain &lt;- createDataPartition(y = df.ann$customer_status_good,
+                               p=0.65,
+                               list = FALSE)
+df.ann.training &lt;- df.ann[intrain,]
+df.ann.testing &lt;- df.ann[-intrain,]
+
+# Fit model
+df.ann.net &lt;- nnet(customer_status_good ~ ., data = df.ann.training, size=15, maxit=500, range=0.1, decay=5e-4, MaxNWts = 10000, trace = FALSE)</code></pre>
+<p>The model is designed as 41-15-1 network with 646 weights. 11 predictors were added to the model, but it works in total with 41 predictors as some of the variables are factors, which will be converted to dummy variables (0/1 values).</p>
+</div>
+<div id="make-predictions" class="section level2" number="9.2">
+<h2 number="9.2"><span class="header-section-number">9.2</span> Make Predictions</h2>
+<pre class="r"><code>pred &lt;- predict(df.ann.net, df.ann.testing, type=&quot;class&quot;)
+cm_nn &lt;- table(pred=pred, true=df.ann.testing$customer_status_good)
+cm_nn</code></pre>
+<pre><code>##     true
+## pred    0    1
+##    0   19   88
+##    1  421 2212</code></pre>
+<p>Calculating the accuracy</p>
+<pre class="r"><code>sum(diag(cm_nn))/sum(sum(cm_nn))</code></pre>
+<pre><code>## [1] 0.8142336</code></pre>
+<p>Percentage of identified ‘bad’ customers</p>
+<pre class="r"><code>cm_nn[1, 1]/(cm_nn[1, 1] + cm_nn[2, 1])</code></pre>
+<pre><code>## [1] 0.04318182</code></pre>
+<pre class="r"><code>cm_nn[1, 1] + cm_nn[2, 1]</code></pre>
+<pre><code>## [1] 440</code></pre>
+<p>The accuracy indicates a good score (0.8142336). However, simply predict all customers as good customers would lead to a even higher accurary (approx. 0.84). The model has issues to identify bad customers. It identifies 107 bad customers, but most of them are in fact good customers. Out of the 440 ‘real’ bad customers the model identifies only 19.</p>
+<pre class="r"><code># Tune nnet with function for different size of neurons
+x &lt;- c()
+for (i in 1:25) {
+  df.ann.net &lt;- nnet(customer_status_good ~ ., data = df.ann.training, size=i, maxit=100, range=0.1, decay=5e-4, MaxNWts = 10000, trace = FALSE)
+  pred &lt;- predict(df.ann.net, df.ann.testing, type=&quot;class&quot;)
+  cm_nn &lt;- table(pred=pred, true=df.ann.testing$customer_status_good)
+  s &lt;- sum(diag(cm_nn))/sum(sum(cm_nn))
+  x &lt;- append(x, s)
+}
+plot(x, main=&quot;Tune nnet - Count of Neurons&quot;, ylab= &quot;Accuracy&quot;, xlab = &quot;Count of Neurons&quot;)</code></pre>
+<p><img src="data:image/png;base64,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" width="672" style="display: block; margin: auto;" /></p>
+<p>This function helps to tune the amount of neurons for the model. However, there is no model, which helps to find a high accuracy and is able to identify bad customers well.</p>
+<p>Importance of the predictors</p>
+<pre class="r"><code>df.ann.net.imp &lt;- varImp(df.ann.net)
+df.ann.net.imp &lt;- df.ann.net.imp[order(-df.ann.net.imp$Overall),, drop = FALSE]
+head(df.ann.net.imp, 10)</code></pre>
+<pre><code>##                                        Overall
+## age_years                            11.641278
+## log_amt_income_total                  4.439373
+## cnt_fam_members                       3.468985
+## flag_own_carY                         3.093140
+## code_genderM                          2.996132
+## occupation_typeLaborers               2.892416
+## name_housing_typeMunicipal apartment  2.683630
+## occupation_typeHigh skill tech staff  2.657693
+## occupation_typeSales staff            2.619351
+## flag_own_realtyY                      2.544774</code></pre>
+<p>This table shows the importance of the different predictors (list of top 10 out of 41).</p>
+</div>
 </div>
 <div id="optimization" class="section level1" number="10">
 <h1 number="10"><span class="header-section-number">10</span> Optimization</h1>
 <p>The distinction between good and bad customer is a way to build up a relatively safe portfolio of customers, who repay their debts with the interest. However, the defined threshold leaves room for optimization.</p>
 <p>Potential options to increase earnings through optimization include:</p>
-<ol style="list-style-type: decimal">
-<li><p>Granting credit cards to a percentage of “bad” applicants<br />
-This adds a marginally higher risk to the portfolio of credit card customers, however, comes with higher possible returns.</p></li>
-<li><p>Allocating credit limits<br />
-Determining the credit limit to allow an applicant/customer based on their likelihood to repay (i.e. “percent_good”) in order to maximize interest paid, thereby increasing earnings.</p></li>
-<li><p>Mark’s Option…</p></li>
-</ol>
+<p><b>1. Granting credit cards to a percentage of “bad” applicants</b> <br> This adds a marginally higher risk to the portfolio of credit card customers, however, comes with higher possible returns.</p>
+<p><b> 2. Allocating credit limits </b> <br> Determining the credit limit to allow an applicant/customer based on their likelihood to repay (i.e. “percent_good”) in order to maximize interest paid, thereby increasing earnings.</p>
+<p><b> 3. Dunning</b> <br> It is lucrative for credit card companies when customers do not immediately repay the loan amounts they borrow. Depending on the agreed contract, the companies can claim additional fees and penalty interest from a certain point. The dunning system should take this into account and not dun the customer too early or the full amount as overdue. However, it should be noted that the later the reminder is issued, the greater the likelihood of a credit default (untested assumption). It is therefore appropriate to demand regular partial payments.</p>
+<p>To optimize (maximize) the profit of a credit card company the following <b>simplified</b> formular could be applied:</p>
+<p><b>Maximize <span class="math inline">\(g(x,y) =\)</span> “loan amount” <span class="math inline">\(\cdot\)</span> “interest rate” <span class="math inline">\(\cdot \frac{x}{360} +\)</span> “additional fees” <span class="math inline">\(–\)</span> “loan amount” <span class="math inline">\(\cdot\)</span> “probability of default”<span class="math inline">\((x,y)\)</span></b></p>
+<p>Control variables: <br> <span class="math inline">\(x =\)</span> days until dunning letter will be sent<br> <span class="math inline">\(y =\)</span> amount of partial payment</p>
+<p>Probability of default is another function based on <span class="math inline">\(x\)</span> and <span class="math inline">\(y\)</span>. The higher the value of <span class="math inline">\(x\)</span> and the lower the value of <span class="math inline">\(y\)</span>, it can be assumed that the probability of default will be increased.</p>
+<p>Constraints are defined based on the agreed contracts between the company and the customers. For example, there it can be defined the minimum days until an amount is overdue (e.g. <span class="math inline">\(x &gt;=\)</span> 30 days).</p>
 </div>
 <div id="session-information" class="section level1" number="11">
 <h1 number="11"><span class="header-section-number">11</span> Session Information</h1>
 <pre class="r"><code>sessionInfo()</code></pre>
 <pre><code>## R version 4.0.4 (2021-02-15)
 ## Platform: x86_64-w64-mingw32/x64 (64-bit)
-## Running under: Windows 10 x64 (build 19044)
+## Running under: Windows 10 x64 (build 19042)
 ## 
 ## Matrix products: default
 ## 
 ## locale:
-## [1] LC_COLLATE=English_United States.1252 
-## [2] LC_CTYPE=English_United States.1252   
-## [3] LC_MONETARY=English_United States.1252
-## [4] LC_NUMERIC=C                          
-## [5] LC_TIME=English_United States.1252    
-## system code page: 65001
+## [1] LC_COLLATE=German_Switzerland.1252  LC_CTYPE=German_Switzerland.1252   
+## [3] LC_MONETARY=German_Switzerland.1252 LC_NUMERIC=C                       
+## [5] LC_TIME=German_Switzerland.1252    
 ## 
 ## attached base packages:
 ## [1] stats     graphics  grDevices utils     datasets  methods   base     
 ## 
 ## other attached packages:
-##  [1] car_3.0-12        carData_3.0-4     gridExtra_2.3     GGally_2.1.2     
-##  [5] inspectdf_0.0.11  knitr_1.33        caret_6.0-90      lattice_0.20-41  
-##  [9] ggplot2_3.3.5     lubridate_1.7.10  dplyr_1.0.5       data.table_1.14.0
-## [13] magrittr_2.0.1   
+##  [1] ROCR_1.0-11       nnet_7.3-15       car_3.0-11        carData_3.0-4    
+##  [5] gridExtra_2.3     GGally_2.1.2      inspectdf_0.0.11  knitr_1.33       
+##  [9] caret_6.0-90      lattice_0.20-41   ggplot2_3.3.5     lubridate_1.7.10 
+## [13] dplyr_1.0.7       data.table_1.14.0 magrittr_2.0.1   
 ## 
 ## loaded via a namespace (and not attached):
-##  [1] sass_0.4.0           tidyr_1.1.3          jsonlite_1.7.2      
-##  [4] splines_4.0.4        foreach_1.5.1        prodlim_2019.11.13  
-##  [7] bslib_0.2.5.1        assertthat_0.2.1     highr_0.9           
-## [10] stats4_4.0.4         yaml_2.2.1           progress_1.2.2      
-## [13] globals_0.14.0       ipred_0.9-12         pillar_1.6.2        
-## [16] glue_1.4.2           pROC_1.18.0          digest_0.6.27       
-## [19] RColorBrewer_1.1-2   colorspace_2.0-2     recipes_0.1.17      
-## [22] htmltools_0.5.1.1    Matrix_1.3-2         plyr_1.8.6          
-## [25] timeDate_3043.102    pkgconfig_2.0.3      listenv_0.8.0       
-## [28] purrr_0.3.4          scales_1.1.1         gower_0.2.2         
-## [31] lava_1.6.10          tibble_3.1.0         mgcv_1.8-33         
-## [34] farver_2.1.0         generics_0.1.0       ellipsis_0.3.2      
-## [37] withr_2.4.2          nnet_7.3-16          cli_3.0.1           
-## [40] survival_3.2-7       crayon_1.4.1         evaluate_0.14       
-## [43] future_1.22.1        fansi_0.4.2          parallelly_1.28.1   
-## [46] nlme_3.1-152         MASS_7.3-53          class_7.3-18        
-## [49] tools_4.0.4          prettyunits_1.1.1    hms_1.0.0           
-## [52] lifecycle_1.0.0      stringr_1.4.0        munsell_0.5.0       
-## [55] compiler_4.0.4       jquerylib_0.1.4      rlang_0.4.11        
-## [58] grid_4.0.4           rstudioapi_0.13      iterators_1.0.13    
-## [61] labeling_0.4.2       rmarkdown_2.10       gtable_0.3.0        
-## [64] ModelMetrics_1.2.2.2 codetools_0.2-18     abind_1.4-5         
-## [67] DBI_1.1.1            reshape_0.8.8        reshape2_1.4.4      
-## [70] R6_2.5.0             future.apply_1.8.1   utf8_1.2.1          
-## [73] stringi_1.5.3        parallel_4.0.4       Rcpp_1.0.7          
-## [76] vctrs_0.3.8          ggfittext_0.9.1      rpart_4.1-15        
-## [79] tidyselect_1.1.0     xfun_0.23</code></pre>
+##  [1] nlme_3.1-152         RColorBrewer_1.1-2   progress_1.2.2      
+##  [4] tools_4.0.4          bslib_0.2.5.1        utf8_1.2.1          
+##  [7] R6_2.5.0             rpart_4.1-15         mgcv_1.8-33         
+## [10] DBI_1.1.1            colorspace_2.0-1     withr_2.4.2         
+## [13] tidyselect_1.1.0     prettyunits_1.1.1    curl_4.3.2          
+## [16] compiler_4.0.4       cli_3.0.1            labeling_0.4.2      
+## [19] sass_0.4.0           scales_1.1.1         stringr_1.4.0       
+## [22] digest_0.6.27        foreign_0.8-81       rmarkdown_2.8       
+## [25] rio_0.5.27           pkgconfig_2.0.3      htmltools_0.5.1.1   
+## [28] parallelly_1.28.1    highr_0.9            rlang_0.4.11        
+## [31] readxl_1.3.1         rstudioapi_0.13      farver_2.1.0        
+## [34] jquerylib_0.1.4      generics_0.1.0       jsonlite_1.7.2      
+## [37] ModelMetrics_1.2.2.2 zip_2.2.0            Matrix_1.3-2        
+## [40] Rcpp_1.0.7           munsell_0.5.0        fansi_0.4.2         
+## [43] ggfittext_0.9.1      abind_1.4-5          lifecycle_1.0.0     
+## [46] stringi_1.5.3        pROC_1.18.0          yaml_2.2.1          
+## [49] MASS_7.3-53          plyr_1.8.6           recipes_0.1.17      
+## [52] grid_4.0.4           parallel_4.0.4       listenv_0.8.0       
+## [55] forcats_0.5.1        crayon_1.4.1         haven_2.4.1         
+## [58] splines_4.0.4        hms_1.0.0            pillar_1.6.2        
+## [61] future.apply_1.8.1   reshape2_1.4.4       codetools_0.2-18    
+## [64] stats4_4.0.4         glue_1.4.2           evaluate_0.14       
+## [67] vctrs_0.3.8          foreach_1.5.1        cellranger_1.1.0    
+## [70] gtable_0.3.0         purrr_0.3.4          tidyr_1.1.3         
+## [73] reshape_0.8.8        future_1.23.0        assertthat_0.2.1    
+## [76] xfun_0.22            gower_0.2.2          openxlsx_4.2.4      
+## [79] prodlim_2019.11.13   class_7.3-18         survival_3.2-7      
+## [82] timeDate_3043.102    tibble_3.1.0         iterators_1.0.13    
+## [85] lava_1.6.10          globals_0.14.0       ellipsis_0.3.2      
+## [88] ipred_0.9-12</code></pre>
 </div>
 
 
@@ -1246,9 +1335,6 @@ $(document).ready(function () {
 
 <script>
 $(document).ready(function ()  {
-
-    // temporarily add toc-ignore selector to headers for the consistency with Pandoc
-    $('.unlisted.unnumbered').addClass('toc-ignore')
 
     // move toc-ignore selectors from section div to header
     $('div.section.toc-ignore')
