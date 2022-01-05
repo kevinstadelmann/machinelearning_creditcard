@@ -34,6 +34,10 @@ library(ggplot2)
 library(GGally)
 library(gridExtra)
 library(car)
+library(e1071)
+library(tidyr)
+library(tidyverse)
+library(fastDummies)
 
 opts_chunk$set(fig.align="center", echo=TRUE)
 knit_hooks$set(inline=function(x) { prettyNum(x, big.mark=",") })
@@ -567,7 +571,163 @@ Comparing the in-sample R^2 values with the outer-sample R^2 values, we see that
 
 # GAM
 
-# SVP
+
+# Support Vector Machine
+
+In the following chapter, a Support Vector Machine is used, trying to predict weather a customer is a good 
+or bad customer.
+
+## Graphical analysis
+
+To first get an overview of potentially good predictor combinations (e.q. where we can see a 
+threshold between good and bad customers), we plot different predictors against the response variable customer_status_good.
+
+```{r analysis-svm, echo=FALSE, warning=FALSE, message=FALSE}
+require(gridExtra)
+
+# work with copy of df.cc
+df.svm <- cbind(df.cc)
+
+# first try
+
+ggplot1 <- ggplot(data = df.svm, aes(x = work_years, y = amt_income_total, color = customer_status_good)) +
+geom_point()+
+labs(title="Income vs. Working Years")+ theme(legend.position = "none")
+
+# second try
+
+ggplot2 <- ggplot(data = df.svm, aes(x = flag_own_realty, y = amt_income_total, color = customer_status_good)) +
+geom_point()+
+labs(title="Income vs. flag_own_realty ")+ theme(legend.position = "none")
+
+
+# third try
+
+ggplot3 <- ggplot(data = df.svm, aes(x = name_education_type, y = amt_income_total, color = customer_status_good)) +
+geom_point()+
+labs(title="Income vs. name_education_type ")+ theme(axis.text.x = element_text(angle = 90))
+
+grid.arrange(ggplot1, ggplot2, ggplot3, ncol=2, nrow=2)
+```
+
+The graphical analysis doesn't show clear thresholds from different predictor variables for customer_status_good.
+
+## Data preparation
+
+SVM cannot handle categorical variables directly, they need to be transformed to dummy variables:
+
+```{r svm preparation,echo=TRUE, warning=FALSE, message=FALSE}
+set.seed(2323)
+
+# add dummy variables to work with categorical variables
+# gender
+df.svm$dm_male <- ifelse(df.cc$code_gender == 'M', 1, 0)
+df.svm$dm_male <- as.factor(df.svm$dm_male)
+
+# education
+df.svm <- dummy_cols(df.svm, select_columns = 'name_education_type')
+df.svm$`name_education_type_Lower secondary` <- as.factor(df.svm$`name_education_type_Lower secondary`)
+df.svm$`name_education_type_Secondary / secondary special` <- as.factor(df.svm$`name_education_type_Secondary / secondary special`)
+df.svm$`name_education_type_Higher education` <- as.factor(df.svm$`name_education_type_Higher education`)
+df.svm$`name_education_type_Incomplete higher` <- as.factor(df.svm$`name_education_type_Incomplete higher`)
+
+# income type
+df.svm <- dummy_cols(df.svm, select_columns = 'name_income_type')
+df.svm$`name_income_type_Commercial associate` <- as.factor(df.svm$`name_income_type_Commercial associate`)
+df.svm$name_income_type_Pensioner <- as.factor(df.svm$name_income_type_Pensioner)
+df.svm$`name_income_type_State servant` <- as.factor(df.svm$`name_income_type_State servant`)
+df.svm$name_income_type_Student <- as.factor(df.svm$name_income_type_Student)
+df.svm$name_income_type_Working <- as.factor(df.svm$name_income_type_Working)
+
+```
+
+For making predictions, we split the data. We use 70% of the data to train the SVM. Using basically all potential predictors, we get an accuracy of around 83.92%. To see if we get better results, we reduce the amount of predictors, for example:
+
+```{r,echo=FALSE,warning=FALSE, message=FALSE}
+
+# chose variables for SVM
+df.svm.var <- df.svm %>%
+  select(customer_status_good,
+         amt_income_total,
+         flag_own_realty,
+         `name_education_type_Lower secondary`,
+         `name_education_type_Secondary / secondary special`,
+         `name_education_type_Higher education`,
+         `name_education_type_Incomplete higher`,
+         `name_income_type_Commercial associate`,
+         name_income_type_Pensioner,
+         `name_income_type_State servant`,
+         name_income_type_Student,
+         name_income_type_Working,
+         cnt_children,
+         age_years,
+         dm_male,
+         work_years
+         )
+
+# split data into train and test data sets
+set.seed(123)
+indices <- createDataPartition(df.svm.var$customer_status_good, p=.70, list = F)
+
+# train data
+train <- df.svm.var %>%
+slice(indices)
+
+# test data
+test_in <- df.svm.var %>%
+slice(-indices) %>%
+select(-customer_status_good)
+
+test_truth <- df.svm.var %>%
+slice(-indices) %>%
+pull(customer_status_good)
+```
+
+
+
+```{r svm, echo=FALSE, warning=FALSE, message=FALSE}
+
+# create SVM
+test_svm <- svm(customer_status_good ~ amt_income_total + flag_own_realty + age_years + work_years,
+                train,
+                scale = TRUE,
+                cost = 10)
+test_svm
+```
+
+```{r predict_confuse, echo=FALSE, warning=FALSE, message=FALSE, include=TRUE}
+test_pred <- predict(test_svm, test_in)
+conf_matrix <- confusionMatrix(test_pred, test_truth)
+conf_matrix
+```
+
+With only four predictors, we get the same result as with all predictors. No matter what combination we tried, we didn't get significant better results with our predictions. To just name a few of the combinations we tried:
+
+```{r, echo=FALSE, include=TRUE}
+Predictors <- c('amt_income_total ', 'amt_income_total + flag_own_realty','amt_income_total + dm_edu_higher',
+                'amt_income_total + work_years + dm_male', 'amt_income_total + flag_own_realty + age_years + work_years')
+Accuracy <- c('0.832', '0.839','0.828', '0.801','0.839')
+table <- data.frame(Predictors, Accuracy)
+table
+```
+
+What is visible: Event one single predictor like amt_income_total reaches almost the same accuracy, like all predictors combined.
+
+## Conclusion SVM
+
+The accuracy of 83.9% is not just a random percentage number, it is exactly the percentage of the good customers in the prediction-testing set. The predictors are too weak, to differentiate between good and bad customers, or in other words: good and bad customers are to well spread over the different predictors.
+This can be easily seen graphically:
+
+```{r}
+plot(test_svm, train, amt_income_total ~ work_years)
+
+```
+
+
+The SVM sees only potential good customers, since it cannot see any differences to bad customers.
+The available predictors don't correspond well to the response variable. Therefore a SVM with
+the predictors at hand is not a good choice.
+
 
 # Neural Networks
 
