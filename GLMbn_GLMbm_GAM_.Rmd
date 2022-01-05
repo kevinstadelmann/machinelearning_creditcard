@@ -310,19 +310,30 @@ For the GLM binomial model there is in general little evidence that the predicto
 
 ### GAM Model
 For the GAM model we use the response variable percent_good, which is the percentage of good customers in our data. We start again with a basic model in which amt_income_total is the predictor.
-```{r GAM 1, message=FALSE}
-gam.cc.1 <- gam(percent_good ~ amt_income_total,
+```{r GAM 1, include=FALSE, message=FALSE}
+gam.cc.1 <- gam(percent_good ~ s(amt_income_total),
                 data = df.cc)
 summary(gam.cc.1)
+plot(gam.cc.1, residuals = TRUE, cex = 2)
 ```
+The p-value for amt_income_total is not significant. We add more variables to the model, code_gender, age_years.
+```{r GAM 2 to 4, include=FALSE, message=FALSE}
+gam.cc.2 <- update(gam.cc.1, . ~ . + occupation_type)
+summary(gam.cc.2)
 
-
-```{r GAM 2 to 4, message=FALSE}
-
+gam.cc.3 <- update(gam.cc.2, . ~ . + s(age_years))
+summary(gam.cc.3)
 ```
+Since the edf is 1 for all this variables, there is no evidence that one of the variables has a non-linear effect on the response variable (models not shown). The p-values also do not show significance.
 
-```{r message=FALSE}
-
+We try a more complex model with all the variables.
+```{r GAM complex model, message=FALSE}
+gam.cc.4 <- gam(percent_good ~ amt_income_total + code_gender + 
+                  age_years + work_years + name_education_type + name_income_type + 
+                  name_housing_type + cnt_children + flag_own_car + flag_own_realty + 
+                  occupation_type, 
+                data = df.cc)
+summary(gam.cc.4)
 ```
 
 ```{r message=FALSE}
