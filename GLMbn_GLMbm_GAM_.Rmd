@@ -1,0 +1,341 @@
+---
+title: "GLM_GAM_paty"
+author: "Patricia Wellhöfer"
+date: "12/31/2021"
+output: html_document
+---
+
+```{r setup, include=TRUE, warning=FALSE, message=FALSE}
+library(magrittr)
+library(data.table)
+library(dplyr)
+library(lubridate)
+library(caret)
+library(inspectdf)
+library(ggplot2)
+library(GGally)
+library(mgcv)
+library(splitTools)
+library(performance)
+library(faraway)
+library(knitr)
+opts_chunk$set(fig.align="center", echo=TRUE)
+
+knit_hooks$set(inline=function(x) {
+  prettyNum(x, big.mark=",")
+})
+```
+
+# Research Question
+Which variables have a significant impact on the creditworthiness of the clients in this dataset?
+The dependent variable used for LM, GLM-poisson and GAM was percent_good. The dependent variable used for SVM XXXXXXXXX was customer_status_good. We used both variables as indication for the creditworthiness of a client.
+
+
+# Data Import and Cleaning
+```{r import-data, include=TRUE, cache=TRUE}
+df.ar <- fread("data/application_record.csv", stringsAsFactors = TRUE)
+df.cr <- fread("data/credit_record.csv", stringsAsFactors = TRUE)
+```
+
+## View Data
+### Application Record Dataframe
+DAYS_BIRTH and DAYS_EMPLOYED columns count backwards from "current" day (0), -1 means yesterday, etc.  
+DAYS_EMPLOYED is positive, if the person is currently unemployed.
+```{r view-df-ar, echo=FALSE}
+kable(sapply(df.ar, class), col.names="type")
+# [NOTE FOR RMD] Convert variables to factors: ID, FLAG_x, CNT_x; calculate age and work in years
+head(df.ar) %>% kable()
+# [NOTE FOR RMD] OCCUPATION_TYPE blank => replace with NA
+```
+
+### Credit Record Dataframe
+MONTHS_BALANCE column counts backward from "current" month (0), -1 = previous month, -2 = 2 months prior, etc.  
+STATUS column: 0 = 1-29 days past due, 1 = 30-59 days past due, 2 = 60-89 days overdue, 3 = 90-119 days overdue, 4 = 120-149 days overdue, 5 = Overdue or bad debts, write-offs for more than 150 days, C = paid off that month,  X = No loan for the month
+```{r view-df-cr, echo=FALSE}
+kable(sapply(df.cr, class), col.names="type")
+# [NOTE FOR RMD] Convert ID to factor
+head(df.cr) %>% kable()
+# [NOTE FOR RMD] Add explanation for interpretation of MONTHS_BALANCE, STATUS columns
+```
+
+## Clean Data
+### Cleaning application_record.csv
+Remove duplicate IDs from application_record.csv
+```{r clean-df-ar, collapse=TRUE, cache=TRUE}
+df.ar$ID %>% unique() %>% length()
+
+duplicates <- df.ar %>% group_by(ID) %>% summarise(count = n()) %>% filter(count > 1)
+df.ar.mod <- df.ar %>% filter(!ID %in% duplicates$ID)
+
+df.ar.mod$ID %>% unique() %>% length()
+```
+
+### Cleaning credit_record.csv
+The original dataset was made available on 2020-03-24, so it is presumed current month is March 2020. 
+From months_balance we create 2 new columns indicating the month and year for each observation. Observations older than 2 years are removed.
+
+Each ID is assigned a "good" or "bad" customer status according to their credit history. If the customer paid off their balance in under 60 days (STATUS = 0, 1, or C) for more than 50% of their balance history, they are determined to be a "good" customer, otherwise they are determined to be a "bad" customer.
+```{r clean-df-cr, include=TRUE, cache=TRUE}
+# Extract month and year from months_balance in df.cr
+df.cr$month_balance <- format(as.Date("2020-03-24") %m+% months(df.cr$MONTHS_BALANCE), "%B")
+df.cr$year_balance <- format(as.Date("2020-03-24") %m+% months(df.cr$MONTHS_BALANCE), "%Y") %>% as.integer(.)
+
+# Remove records older than 2 years
+df.cr.mod <- df.cr %>% filter(MONTHS_BALANCE > -24)
+
+# Assign customer status
+df.status <- df.cr.mod %>%
+  group_by(ID) %>%
+  summarise(cnt_status_good = length(STATUS[STATUS==0|STATUS==1|STATUS=='C']), 
+            cnt_status_bad = n() - cnt_status_good, 
+            percent_good = round(cnt_status_good / n() * 100),
+            percent_bad = round(cnt_status_bad / n() * 100)) %>%
+  mutate(
+    customer_status_good = ifelse(percent_good >= 50, 1, 0)
+  ) %>%
+  select(ID, customer_status_good, percent_good, cnt_status_good, cnt_status_bad)
+
+df.status$customer_status_good <- as.factor(df.status$customer_status_good)
+```
+
+### Join datasets
+The two cleaned datasets are joined and only records where IDs exist in both are kept.
+
+Cleaning steps undertaken include: ... [ACTION NEEDED HERE]
+```{r join-datasets, include=TRUE, cache=TRUE}
+
+df.cc.raw <- inner_join(x = df.status, y = df.ar.mod, by = "ID") %>%
+  mutate(ID = as.factor(ID),
+         CNT_FAM_MEMBERS = as.integer(CNT_FAM_MEMBERS),
+         age_years = as.numeric(round(DAYS_BIRTH * (-1) / 365.25), 0),         # instead of DAYS_BIRTH
+         work_years = as.numeric(round((DAYS_EMPLOYED * (-1) / 365.25), 0)),   # instead of DAYS_EMPLOYED, negative: Pensioner
+         FLAG_MOBIL = as.factor(FLAG_MOBIL),
+         FLAG_WORK_PHONE = as.factor(FLAG_WORK_PHONE),
+         FLAG_PHONE = as.factor(FLAG_PHONE),
+         FLAG_EMAIL = as.factor(FLAG_EMAIL))
+
+# Change column names to lower case
+setnames(df.cc.raw, tolower(names(df.cc.raw)))
+
+# Look at the factor levels
+df.cc.raw %>% 
+  select(-id) %>% 
+  select_if(is.factor) %>%
+  sapply(., FUN = levels)
+
+# flag_mobil = 1 for all IDs => exclude from final dataset
+
+# occupation_type has "" level => replace with NA
+levels(df.cc.raw$occupation_type)[levels(df.cc.raw$occupation_type)==""] <- "NA"
+# df.cc.raw$occupation_type %>% table()                                        # check that "" are updated as NA
+
+# Set order of levels in education type
+df.cc.raw$name_education_type <- factor(df.cc.raw$name_education_type, levels=c("Lower secondary", "Secondary / secondary special", "Incomplete higher", "Higher education", "Academic degree"), ordered = TRUE)
+
+# Convert -ve values to NA
+df.cc.raw$work_years[df.cc.raw$work_years == '-1000'] <- NA
+
+# Select columns
+# months_balance, days_birth, days_employed and flag_mobil columns are excluded
+df.cc <- df.cc.raw %>%
+  select(id,
+         code_gender,
+         age_years,
+         name_education_type,
+         name_income_type,
+         name_housing_type,
+         name_family_status,
+         cnt_children,
+         cnt_fam_members,
+         flag_own_car,
+         flag_own_realty,
+         work_years,
+         amt_income_total,
+         occupation_type,
+         flag_work_phone,
+         flag_phone,
+         flag_email,
+         customer_status_good,
+         percent_good,
+         cnt_status_good,
+         cnt_status_bad)
+
+```
+
+Remove additional duplicates. Even tough entries have different ID's, all the other
+columns are the same. That's why we only keep the unique ID's, which also have uniqueness
+in all the other columns.
+
+```{r remove-dupes, cache=TRUE}
+df.cc <- df.cc[!duplicated(df.cc[c(2:17)]),]
+
+# remove NA-values
+df.cc <- na.omit(df.cc)
+```
+
+### Check Final Dataframe
+```{r summary-df-cc, include=TRUE, collapse=TRUE}
+# Meta information from df.cc
+nlevels(df.cc$id)
+
+str(df.cc)
+
+head(df.cc) %>% kable()
+
+df.cc %>%
+  inspect_cat() %>%
+  show_plot()
+```
+
+## Graphical Analysis 
+We would expect amt_income_total to have the strongest impact on percent_good or customer_status_good, respectively creditworthiness. We are also interested in seeing if variables such as code_gender, work_years, age_years, and name_education_type have a significant impact on the target variables.
+
+### Overview of all the different variables
+To have a first overview of the expected most important variables (percent_good, amt_income_total, code_gender, age_years, work_years), we plot them with ggpairs. After the first plot, we realize that gender does not make a significant difference for our target variable. Later on we can confirm this observation. This is why we show the plots with cnt_children and flag_own_realty instead. Since our dataset consists of many categorical variables, we additionaly adjust the argument color in each further plot with one of this variables.
+```{r ggpairs expected most important variables 1, include=FALSE, message=FALSE}
+# colors for the different genders
+ggpairs(data = df.cc, legend = 1,
+        columns = c("percent_good", "amt_income_total", "cnt_children", "age_years", "work_years"),
+        proportions = "auto",
+        mapping = aes(color = code_gender, alpha = 0.5)) +
+  
+  theme(legend.position = "bottom",
+        legend.title=element_text(size=9),
+        legend.text=element_text(size=7.5))
+
+# colors for the different income types plus flag_own_realty
+ggpairs(data = df.cc, legend = 1,
+        columns = c("percent_good", "amt_income_total", "flag_own_realty", "age_years", "work_years"),
+        proportions = "auto",
+        mapping = aes(color = name_income_type, alpha = 0.5)) +
+  
+  theme(legend.position = "bottom",
+        legend.title=element_text(size=9),
+        legend.text=element_text(size=7.5))
+```
+
+```{r ggpairs expected most important variables 2, echo=FALSE, message=FALSE}
+# colors for the different education types
+ggpairs(data = df.cc, legend = 1,
+        columns = c("percent_good", "amt_income_total", "cnt_children", "age_years", "work_years"),
+        proportions = "auto",
+        mapping = aes(color = name_education_type, alpha = 0.5)) +
+  
+  theme(legend.position = "bottom",
+        legend.title=element_text(size=9),
+        legend.text=element_text(size=7.5))
+
+# colors for the different housing types
+ggpairs(data = df.cc, legend = 1,
+        columns = c("percent_good", "amt_income_total", "flag_own_realty", "age_years", "work_years"),
+        proportions = "auto",
+        mapping = aes(color = name_housing_type, alpha = 0.5)) +
+  
+  theme(legend.position = "bottom",
+        legend.title=element_text(size=9),
+        legend.text=element_text(size=7.5))
+#### missing plot occupation_type - too many levels
+```
+
+### GLM Binomial
+For the GLM Binomial model we use the response variable proportion of good customers. Therefore we divide the customer status in the data set into good (1) and bad (0) customer count for creditworthiness.
+```{r Visualization, message=FALSE}
+pairs(customer_status_good ~ amt_income_total + code_gender + age_years + work_years + name_education_type + name_housing_type + cnt_children + occupation_type + flag_own_realty,
+      data = df.cc,
+      upper.panel = panel.smooth)
+```
+The graphical analysis indicates that the predictors have almost no effect on our dependent variable.
+
+#### Binomial Models
+We try to fit simple models with the continuous variables amt_income_total, age_years, work_years and cnt_children.
+```{r simple models, include=FALSE, message=FALSE}
+glm.binom1 <- glm(cbind(cnt_status_good, cnt_status_bad) ~ amt_income_total,
+               family = "binomial",
+               data = df.cc)
+summary(glm.binom1)
+
+glm.binom2 <- update(glm.binom1, .~. + age_years,
+                     family = "binomial",
+                     data = df.cc)
+summary(glm.binom2)
+```
+
+```{r simple model with all continuous veriables, message=FALSE}
+glm.binom3 <- update(glm.binom2, .~. + work_years + cnt_children,
+                     family = "binomial",
+                     data = df.cc)
+summary(glm.binom3)
+exp(coef(glm.binom3)["amt_income_total"])
+ilogit(coef(glm.binom3)["amt_income_total"])
+```
+Only the predictor amt_income_total seems to play a significant role. If we increase this variable by one unit, we will have an increase of the proportion of good customers also by almost 1.
+
+When interaction between all variables is included, it is interesting to see that it plays a significant role, e.g. there is strong evidence of interaction for amt_income_total and work_years as well as for amt_income_total and cnt_children. P-values of interaction between other variables show significance too. Also the pairs plot shows that there is interaction between different variables.
+
+If the categorical variable occupation_type is added to income, income is no longer significant as a predictor, but occupation_type itself shows a significant p-value (checked with drop1).
+```{r adding categorical variables, include=FALSE, message=FALSE}
+glm.binom4 <- glm(cbind(cnt_status_good, cnt_status_bad) ~ amt_income_total + occupation_type,
+               family = "binomial",
+               data = df.cc)
+summary(glm.binom4)
+```
+
+#### Visualization of the results
+We plot the actual observations (blue dots) along with the predicted values for a sequence of 100 incomes that range from 27.000 to 1.5 mio.
+```{r Visualization of the results, echo=FALSE, message=FALSE}
+good_customer_rate <- as.numeric(df.cc$cnt_status_good)/ (as.numeric(df.cc$cnt_status_good)+as.numeric(df.cc$cnt_status_bad))
+
+new.data = data.frame(amt_income_total = seq(27000, 1500000, length.out = 100))
+new.data$pred.good <- predict(glm.binom1, newdata = new.data,
+                                 type = "response")
+##
+ggplot(data = df.cc,
+       mapping = aes(y = good_customer_rate,
+                     x = amt_income_total)) + 
+  ylim(0,1) +
+  geom_hline(yintercept = 0:1, col = "gray") +
+  ##
+  ## predictions for amt_income_total
+  geom_point(data = new.data,
+               mapping = aes(
+      y = pred.good,
+      x = amt_income_total)) +
+  ##
+  ## actual observations
+  geom_point(col = "blue", 
+             size = 1)
+```
+For the GLM binomial model there is in general little evidence that the predictors have significant influence. When visualizing the results we can see that we have not very much observation at the upper end of the amt_income_total scale. This makes us doubt the validity of the results. It makes little sense that although those observations with the highest income are between 75% and 100% of the dependent variable good_customer_rate, the predicted variables show a downward trend.
+
+
+### GAM Model
+For the GAM model we use the response variable percent_good, which is the percentage of good customers in our data. We start again with a basic model in which amt_income_total is the predictor.
+```{r GAM 1, include=FALSE, message=FALSE}
+gam.cc.1 <- gam(percent_good ~ s(amt_income_total),
+                data = df.cc)
+summary(gam.cc.1)
+plot(gam.cc.1, residuals = TRUE, cex = 2)
+```
+The p-value for amt_income_total is not significant. We add more variables to the model, code_gender, age_years.
+```{r GAM 2 to 4, include=FALSE, message=FALSE}
+gam.cc.2 <- update(gam.cc.1, . ~ . + occupation_type)
+summary(gam.cc.2)
+
+gam.cc.3 <- update(gam.cc.2, . ~ . + s(age_years))
+summary(gam.cc.3)
+```
+Since the edf is 1 for all this variables, there is no evidence that one of the variables has a non-linear effect on the response variable (models not shown). The p-values also do not show significance.
+
+We try a more complex model with all the variables.
+```{r GAM complex model, message=FALSE}
+gam.cc.4 <- gam(percent_good ~ amt_income_total + code_gender + 
+                  age_years + work_years + name_education_type + name_income_type + 
+                  name_housing_type + cnt_children + flag_own_car + flag_own_realty + 
+                  occupation_type, 
+                data = df.cc)
+summary(gam.cc.4)
+```
+
+```{r message=FALSE}
+
+```

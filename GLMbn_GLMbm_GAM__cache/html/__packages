@@ -1,0 +1,15 @@
+magrittr
+data.table
+dplyr
+lubridate
+ggplot2
+lattice
+caret
+inspectdf
+GGally
+nlme
+mgcv
+splitTools
+performance
+faraway
+knitr

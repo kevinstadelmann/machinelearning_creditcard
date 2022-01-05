@@ -1,7 +1,7 @@
 ---
-title: "SVM_Marc"
+title: "ANN_Marc"
 author: "Marc Weber"
-date: "28.12.2021"
+date: "02.01.2022"
 output: html_document
 ---
 
@@ -142,45 +142,154 @@ df.cc <- na.omit(df.cc)
 ```
 
 
-
 ```{r Libraries}
-#library(tidyverse)
-library(e1071)
+library(nnet)
+library(gamlss.add)
 library('fastDummies')
+library(neuralnet)
+
 ```
 
 
 
 
+
+## Build the network
+
+```{r}
+set.seed(123)
+
+# work with copy of df.cc
+df.ann <- cbind(df.cc)
+
+## Only get needed columns for model
+keeps <- c(
+          "customer_status_good"
+          #,"id"
+          ,"code_gender"
+          ,"age_years"
+          ,"name_education_type"
+          ,"name_income_type"
+          ,"name_housing_type"
+          ,"name_family_status"
+          ,"cnt_children"
+          ,"cnt_fam_members"
+          ,"flag_own_car"
+          ,"flag_own_realty"
+          ,"work_years"
+          ,"amt_income_total"
+          ,"occupation_type"
+          ,"flag_work_phone"
+          ,"flag_phone"
+          ,"flag_email"
+           )
+
+df.ann <- df.ann[keeps]
+
+
+# split data into train and test data sets
+intrain <- createDataPartition(y = df.ann$customer_status_good,
+                               p=0.65,
+                               list = FALSE)
+df.ann.training <- df.ann[intrain,]
+df.ann.testing <- df.ann[-intrain,]
+
+
+# x <- c()
+# for (i in 1:25) {
+#   df.ann.net <- nnet(customer_status_good ~ ., data = df.ann.training, size=i, maxit=100, range=0.1, decay=5e-4, MaxNWts = 10000)
+#   pred <- predict(df.ann.net, df.ann.testing, type="class")
+#   cm_nn <- table(pred=pred, true=df.ann.testing$customer_status_good)
+#   s <- sum(diag(cm_nn))/sum(sum(cm_nn))
+#   x <- append(x, s)
+# }
+# x
+
+df.ann.net <- nnet(customer_status_good ~ ., data = df.ann.training, size=30, maxit=200, range=0.1, decay=5e-4, MaxNWts = 10000)
+```
+
+```{r}
+plot(df.ann.net)
+```
+```{r}
+df.ann.net
+```
+
+## Make Predictions
+
+
+```{r}
+pred <- predict(df.ann.net, df.ann.testing, type="class")
+cm_nn <- table(pred=pred, true=df.ann.testing$customer_status_good)
+cm_nn
+```
+
+Calculating the accuracy
+
+```{r}
+sum(diag(cm_nn))/sum(sum(cm_nn))
+```
+
+And the precision
+
+```{r}
+cm_nn[1, 1]/(cm_nn[1, 1] + cm_nn[1, 2])
+```
+Or do all of it using the `confusionMatrix` function
+
+```{r}
+confusionMatrix(as.factor(df.ann.testing$customer_status_good), as.factor(pred))
+```
+## ROC Curves*
+
+The Receiver Operating Characteristic is a useful tool to indicate model quality. For this we plot sensitivity against 1-specificity
+
+```{r}
+library(ROCR)
+```
+```{r}
+pred_raw <- predict(df.ann.net, df.ann.testing, decision.values=TRUE, type = "raw")
+pred <- ROCR::prediction(pred_raw, df.ann.testing$customer_status_good)
+perf <- ROCR::performance(pred, "tpr", "fpr")
+plot(perf, lwd=2, col="blue")
+abline(a=0, b=1)
+```
+
+
+Importance of the variables (higher the better)
+```{r}
+varImp(df.ann.net)
+```
+
 ```{r Preparation}
 set.seed(2323)
 
 # work with copy of df.cc
-df.svm <- cbind(df.cc)
+df.ann2 <- cbind(df.cc)
 
 # add dummy variables to work with categorical variables
-df.svm$dm_male <- ifelse(df.svm$code_gender == 'M', 1, 0)
-df.svm$dm_flag_own_car <- ifelse(df.svm$flag_own_car == 'Y', 1, 0)
-df.svm$dm_flag_own_realty <- ifelse(df.svm$flag_own_realty == 'Y', 1, 0)
+df.ann2$dm_male <- ifelse(df.ann2$code_gender == 'M', 1, 0)
+df.ann2$dm_flag_own_car <- ifelse(df.ann2$flag_own_car == 'Y', 1, 0)
+df.ann2$dm_flag_own_realty <- ifelse(df.ann2$flag_own_realty == 'Y', 1, 0)
 
-df.svm <- dummy_cols(df.svm, select_columns = c('name_education_type', 'name_income_type', 'name_housing_type', 'name_family_status', 'occupation_type'))
+df.ann2 <- dummy_cols(df.ann2, select_columns = c('name_education_type', 'name_income_type', 'name_housing_type', 'name_family_status', 'occupation_type'))
 
 # standardize
-#df.svm$log_amt_income_total <- log(df.svm$amt_income_total)
+df.ann2$log_amt_income_total <- log(df.ann2$amt_income_total)
 
 
 # split data into train and test data sets
-intrain <- createDataPartition(y = df.svm$customer_status_good,
+intrain <- createDataPartition(y = df.ann2$customer_status_good,
                                p=0.65,
                                list = FALSE)
-df.svm.training <- df.svm[intrain,]
-df.svm.testing <- df.svm[-intrain,]
+df.ann2.training <- df.ann2[intrain,]
+df.ann2.testing <- df.ann2[-intrain,]
 
-# dim(df.svm.testing)
-# dim(df.svm.training)
+# dim(df.ann2.testing)
+# dim(df.ann2.training)
 # 
-# anyNA(df.svm)
-# summary(df.svm)
+# anyNA(df.ann2)
+# summary(df.ann2)
 ```
 
 ```{r}
@@ -200,7 +309,7 @@ keeps <- c(
           #,"flag_own_car"
           #,"flag_own_realty"
           ,"work_years"
-          ,"amt_income_total"
+          #,"amt_income_total"
           #,"occupation_type"
           #,"flag_work_phone"
           #,"flag_phone"
@@ -208,16 +317,16 @@ keeps <- c(
           ,"dm_male"
           ,"dm_flag_own_car"
           ,"dm_flag_own_realty"
-          ,"name_education_type_Lower secondary"
-          ,"name_education_type_Secondary / secondary special"
-          ,"name_education_type_Incomplete higher"
-          ,"name_education_type_Higher education"
-          ,"name_education_type_Academic degree"
-          ,"name_income_type_Commercial associate"
-          ,"name_income_type_Pensioner"
-          ,"name_income_type_State servant"
-          ,"name_income_type_Student"
-          ,"name_income_type_Working"
+          # ,"name_education_type_Lower secondary"
+          # ,"name_education_type_Secondary / secondary special"
+          # ,"name_education_type_Incomplete higher"
+          # ,"name_education_type_Higher education"
+          # ,"name_education_type_Academic degree"
+          # ,"name_income_type_Commercial associate"
+          # ,"name_income_type_Pensioner"
+          # ,"name_income_type_State servant"
+          # ,"name_income_type_Student"
+          # ,"name_income_type_Working"
           # ,"name_housing_type_Co-op apartment"
           # ,"name_housing_type_House / apartment"
           # ,"name_housing_type_Municipal apartment"
@@ -248,46 +357,46 @@ keeps <- c(
           # ,"occupation_type_Secretaries"
           # ,"occupation_type_Security staff"
           # ,"occupation_type_Waiters/barmen staff"
+          , "log_amt_income_total"
            )
 
-df.svm.training <- df.svm.training[keeps]
+df.ann2.training <- df.ann2.training[keeps]
 ```
 
 
 ```{r}
-
-# train
-trctrl <- trainControl(method = "repeatedcv", number = 10, repeats = 1)
-
-# train the support vector machine
-#cc_svm <- svm(customer_status_good ~ dm_male,
-#                df.svm.training,
-#                kernel = "linear",
-#                scale = TRUE,
-#                cost = 10)
-#grid <- expand.grid(C = c(0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2.5))
-#grid <- expand.grid(C = c(2), sigma = c(0.01, 0.02, 0.03, 0.04, 0.06, 0.1,0.25,0.5,1))
-
-cc_svm <- train(customer_status_good ~ .,
-                data = df.svm.training,
-                method = "svmRadial",
-                trControl=trctrl,
-                preProcess = c("center", "scale"),
-                scale = TRUE,
-                #tuneGrid = grid,
-                tuneLength = 10)
-
-
-# make the prediction
-test_pred <- predict(cc_svm, newdata = df.svm.testing)
-
-# compare the predicted data with the testdata subset
-confusionMatrix(table(test_pred, df.svm.testing$customer_status_good))
-
-plot(cc_svm)
-cc_svm
-
+str(df.ann2.training)
 ```
+
+```{r}
+df.ann2.neuralnet <- neuralnet(customer_status_good ~ ., data = df.ann2.training, hidden = c(4,2))
+```
+
+```{r}
+plot(df.ann2.neuralnet)
+```
+
+
+
+
+
+
+
+
+## Make Predictions
+
+
+```{r}
+test_results <- neuralnet::compute(df.ann2.neuralnet, df.ann2.testing)
+test_results$net.result
+```
+
+
+
+
+
+
+
 
 
 

@@ -189,7 +189,7 @@ We would expect amt_income_total to have the strongest impact on percent_good or
 
 ### Overview of all the different variables
 To have a first overview of the expected most important variables (percent_good, amt_income_total, code_gender, age_years, work_years), we plot them with ggpairs. After the first plot, we realize that gender does not make a significant difference for our target variable. Later on we can confirm this observation. This is why we show the plots with cnt_children and flag_own_realty instead. Since our dataset consists of many categorical variables, we additionaly adjust the argument color in each further plot with one of this variables.
-```{r ggpairs expected most important variables 1, message=FALSE}
+```{r ggpairs expected most important variables 1, include=FALSE, message=FALSE}
 # colors for the different genders
 ggpairs(data = df.cc, legend = 1,
         columns = c("percent_good", "amt_income_total", "cnt_children", "age_years", "work_years"),
@@ -199,30 +199,6 @@ ggpairs(data = df.cc, legend = 1,
   theme(legend.position = "bottom",
         legend.title=element_text(size=9),
         legend.text=element_text(size=7.5))
-```
-
-```{r ggpairs expected most important variables 2, echo=FALSE, message=FALSE}
-# colors for the different genders
-ggpairs(data = df.cc, legend = 1,
-        columns = c("percent_good", "amt_income_total", "cnt_children", "age_years", "work_years"),
-        proportions = "auto",
-        mapping = aes(color = code_gender, alpha = 0.5)) +
-  
-  theme(legend.position = "bottom",
-        legend.title=element_text(size=9),
-        legend.text=element_text(size=7.5))
-
-
-# colors for the different education types
-ggpairs(data = df.cc, legend = 1,
-        columns = c("percent_good", "amt_income_total", "cnt_children", "age_years", "work_years"),
-        proportions = "auto",
-        mapping = aes(color = name_education_type, alpha = 0.5)) +
-  
-  theme(legend.position = "bottom",
-        legend.title=element_text(size=9),
-        legend.text=element_text(size=7.5))
-
 
 # colors for the different income types plus flag_own_realty
 ggpairs(data = df.cc, legend = 1,
@@ -233,7 +209,18 @@ ggpairs(data = df.cc, legend = 1,
   theme(legend.position = "bottom",
         legend.title=element_text(size=9),
         legend.text=element_text(size=7.5))
+```
 
+```{r ggpairs expected most important variables 2, echo=FALSE, message=FALSE}
+# colors for the different education types
+ggpairs(data = df.cc, legend = 1,
+        columns = c("percent_good", "amt_income_total", "cnt_children", "age_years", "work_years"),
+        proportions = "auto",
+        mapping = aes(color = name_education_type, alpha = 0.5)) +
+  
+  theme(legend.position = "bottom",
+        legend.title=element_text(size=9),
+        legend.text=element_text(size=7.5))
 
 # colors for the different housing types
 ggpairs(data = df.cc, legend = 1,
@@ -247,9 +234,7 @@ ggpairs(data = df.cc, legend = 1,
 #### missing plot occupation_type - too many levels
 ```
 
-### Boxplots for categorical variables
-To see more details, we made for several categorical variables boxplots.
-```{r Boxplots for categorical variables, echo=FALSE, message=FALSE}
+```{r Boxplots for categorical variables, include=FALSE}
 ggplot(df.cc, aes(x=code_gender, y=percent_good)) + 
   geom_boxplot()  # no difference between the genders
 
@@ -273,9 +258,7 @@ ggplot(df.cc, aes(x=occupation_type, y=percent_good)) +
   theme(text = element_text(size = 8))
 ```
 
-### LM
-Check mean percentage good of all observations and test against amt_income_total.
-```{r LM simple model, message=FALSE}
+```{r LM simple model, include=FALSE}
 lm.cc.0 <- lm(percent_good ~ 1, data = df.cc)
 summary(lm.cc.0)
 # mean(df.cc$percent_good)
@@ -286,8 +269,7 @@ summary(lm.cc.1)
 anova(lm.cc.0, lm.cc.1)
 ```
 
-Add further variables to the LM and again test against less complex models.
-```{r LM - checking variable importance - global F-test, message=FALSE}
+```{r LM - checking variable importance - global F-test, include=FALSE}
 lm.cc.2 <- update(lm.cc.1, . ~ . + code_gender + age_years + work_years + name_education_type +
                     name_income_type + name_housing_type + name_family_status + cnt_children +
                     cnt_fam_members + flag_own_car)
@@ -301,15 +283,14 @@ drop1(lm.cc.4, test = "F")
 
 # Global F-Test
 anova(lm.cc.0, lm.cc.4)
+# Considering the results of the ANOVA test, there is no evidence that one of the predictors plays a relevant role for our target variable.
 ```
-
-Considering the results of the ANOVA test, there is no evidence that one of the predictors plays a relevant role for our target variable.
 
 ### GLM Poisson
 For our GLM Poisson model we created the data frame "df.poisson" to get count data out of the original raw data as dependent variable. Therefore we have a closer look to the different status in the data set during the period of 24 months. The target variable in this model is status_count for the status X, C, 0, 1, 2, 3, 4, 5. For performance reasons, i.e. model creation takes very long with the whole data set, the data set is reduced by half using the caret function "createDataPartitioning".
 
 #### Data Set for Poisson
-```{r Data Prep Poisson, include=FALSE, message=FALSE}
+```{r Data Prep Poisson, include=FALSE}
 # Join datasets where ID match exists
 df.poisson.raw <- inner_join(x = df.cr.mod, y = df.ar.mod, by = "ID") %>%
   mutate(ID = as.factor(ID),
@@ -424,13 +405,15 @@ head(df.poisson) %>% kable()
 ```
 
 #### Data Visualization for Poisson
-```{r Visualization number of occurrences per category, message=FALSE}
+The barplot gives us an overview of the number of observations we have per status. Most observations are in status C followed by the number of observations in status 0 and status X.
+```{r Visualization number of occurrences per category, echo=FALSE, message=FALSE}
 ggplot(df.barplot, aes(x = status, y = status_counted)) + 
     geom_bar(stat = "identity") +
     geom_text(aes(label = status_counted), vjust = -0.3, size = 3, colour = "black")
 ```
 
-```{r Visualization mean number of occurrences per category, message=FALSE}
+In the boxplot we can observe that the variability of count_status, i.e. count per status in the period of 24 months, increases with the mean value of every status. This behavior is typical for count data and therefore poisson models are suitable to analyze them.
+```{r Visualization mean number of occurrences per category, echo=FALSE, message=FALSE}
 df.poisson %>% 
   group_by(months_balance, status) %>% 
   summarize(status_counted = sum(status_count)) %>% 
@@ -438,8 +421,8 @@ df.poisson %>%
   geom_boxplot() +
   stat_summary(fun=mean, geom="point", shape=18, size=3, color="blue")
 ```
-In the boxplot we can observe that the variability of count_status, i.e. count per status in the period of 24 months, increases with the mean value of every status. This behavior is typical for count data and therefore poisson models are suitable to analyze them.
 
+#### GLM Poisson Models
 Since we examine a different dependent variable for customer creditworthiness in the poisson model than we did in the LM section earlier, we start over again when reviewing the relevant independent variables. The dependent variable status_count depends on the variable status. What we want to know is, if other variables influence status. Therefore we include interaction into our model, starting again with those predictors that we believe have influence.
 ```{r GLM poisson model 1 to 3, message=FALSE}
 glm.1 <- glm(status_count ~ status,
@@ -468,8 +451,8 @@ imp <- data.frame(names   = rownames(imp),
 imp[order(imp$overall,decreasing = TRUE),]
 ```
 
-#### Creating a model based on the most Important Variables
-We create a model based on the five most important variables previously identified.
+#### GLM Poisson model with most Importantant Variables
+We create a model based on the five most important variables previously identified ()
 ```{r GLM poisson with selected variables, message=FALSE}
 glm.4 <- glm(status_count ~ amt_income_total + status:age_years + status:code_gender + occupation_type + status:work_years,
              family = "poisson",
@@ -480,4 +463,17 @@ summary(glm.4)
 #### Performance Check of the GLM Poisson models
 ```{r Performance GLM poisson, echo=FALSE, message=FALSE}
 compare_performance(glm.1, glm.2, glm.3, glm.4, rank = TRUE)
+```
+
+### GLM Binomial
+Response variable: customer_status_good (good/bad customer)
+```{r message=FALSE}
+glm.bn1 <- glm(customer_status_good ~ amt_income_total,
+                   family = "binomial",
+                   data = df.cc)
+summary(glm.bn1)
+```
+
+```{r message=FALSE}
+
 ```
