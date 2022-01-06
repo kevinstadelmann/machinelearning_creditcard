@@ -1022,17 +1022,26 @@ Probability of default is another function based on $x$ and $y$. The higher the 
 
 # Conclusion
 
-
+In the following table you can find a overview over all used methods, the model used and the respective performance.
+A detailed conclusion can be found after every model-chapter.
 
 ```{r conclusion, echo=FALSE, include=TRUE}
 Method <- c('LM','GLM-Poisson','GLM-Binomial','GAM','SVM','ANN')
-`Dependen var` <- c('percentage_good', 'cnt_status_good','', '','customer_status_good', '')
-Model <- c('percent_good ~ occupation_type','cnt_status_good ~ occupation_type (quasi-poisson)','','','customer_status_good ~ amt_income_total + flag_own_realty', '')
-Performance <- c('', '', '', '', '', '')
+`Dependent variable` <- c('percentage_good', 'cnt_status_good','', '','customer_status_good', 'customer_status_good')
+Predictors <- c('occupation_type','occupation_type (quasi-poisson)','','','amt_income_total + flag_own_realty', 'gender+age+education+income_type+housing+family_status+cnt_fam_members+own_car+own_realty+log_amt_income_total+occupation_type')
+Performance <- c('R^2 and adjusted R^2', 'p-value using anova(fit1, fit2)', '', '', 'Accuracy in %', 'Accuracy in %')
 
-table <- data.frame(Method, `Dependen var`, Model, Performance)
+table <- data.frame(Method, `Dependent variable`, Predictors, Performance)
 table
 ```
+
+Personal note:
+
+We had high expectations on the data set and the outcome of our models. However, reality hits you hard sometimes. Two things we would like to mention here:
+- Data preparation: Half of the effort was data preparation and discussion how to define the response variable(s). At one point we agreed on one definition. Choosing another definition of what a bad customer looks like, might change the outcome of our models drastically.
+- Data set: Looking back, we would choose a data set with less categorical / binomial data. Generally speaking, we made the experience that categorical variables are harder to interpret and to more difficult to use them as good predictors.
+
+
 
 # Session Information
 ```{r session-info}
