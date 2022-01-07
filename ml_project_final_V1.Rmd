@@ -577,7 +577,7 @@ Comparing the in-sample R^2 values with the outer-sample R^2 values, we see that
 ## Conclusions
 It was interesting to see that the majority of boxplots differed only in spread and not the median. This made it challenging to find and determine variables that would make good predictors for our chosen response variable, percent_good. With the number of variables in our dataset, a lot of time was spent in graphical analysis in an effort to narrow down the potential influencers. The analysis in this work has shown that demographic variables are, in this case, weak predictors of loan repayment.
 
-# GLM (Poisson)
+# GLM Poisson Model
 Here we wish to predict the count of "good status", which counts the number of times where loans are repayed within 60 days (i.e. status = 0, 1, or C). In practice, it could be beneficial to predict different repayment statuses in order to find the right balance of interest repayed to optimize earnings.  
   
 First we check our response variable cnt_status_good and see that it is not in the form of a bell curve (normal distribution), indicating that a normal Linear Model is not appropriate.
@@ -742,7 +742,7 @@ This confirms the hypothesis from the graphical analysis, that there is a slight
 ## Conclusions
 While there existed 2 count variables within our existing dataset (cnt_fam_members and cnt_children), predicting these variables served no practical purpose within the scope of our project. As the dependent variable in this case is correlated with the response variable from our linear model, the final model produced supports that occupation_type plays some role in repaying loans within 60 days.
 
-# GLM Binomial
+# GLM Binomial Model
 For the GLM Binomial model we use the response variable proportion of good customers. Therefore we divide the customer status in the data set into good (1) and bad (0) customer count for creditworthiness. We would expect amt_income_total to have the strongest impact on the response variable, which is related to creditworthiness. We are also interested in seeing if variables such as age_years, work_years and cnt_children have a significant impact on the target variables.
 
 ## Graphical Analysis
@@ -824,8 +824,8 @@ ggplot(data = df.cc,
 ```
 For the GLM binomial model there is in general small evidence that the predictors have significant influence. When visualizing the results we can see that we have not very much observations at the upper end of the amt_income_total scale. This makes us doubt the validity of the results. Interestingly, the predicted variables show a downward trend although the observations with the highest income are between 75% and 100% of the dependent variable good_customer_rate.
 
-## GAM Model
-For the GAM model we use the response variable percent_good, which is the percentage of good customers in our data. We start again with a basic model in which amt_income_total is the predictor. The p-value for amt_income_total is not significant. We try a more models and show the most complex model.
+# GAM Model
+For the GAM model we use the response variable percent_good, which is the percentage of good customers in our data. We start again with a basic model in which amt_income_total is the predictor. The p-value for amt_income_total is not significant. We try a few models with more variables and show only the most complex model.
 ```{r GAM 1, include=FALSE, message=FALSE}
 gam.cc.1 <- gam(percent_good ~ s(amt_income_total),
                 data = df.cc)
@@ -842,7 +842,7 @@ summary(gam.cc.2)
 gam.cc.3 <- update(gam.cc.2, . ~ . + s(work_years) + flag_own_realty + cnt_children)
 summary(gam.cc.3)
 ```
-For the smooth terms amt_income_total and age_years the edf is 1, which means that the effect on the response variable should be linear. For the smooth term work_years the edf is higher than 4 which means that the effect on the response variable is a more complex. The p-values of all smooth terms show no significance. Hence, there is no evidence that the effect differs from zero.
+The edf of the smooth terms amt_income_total and age_years is 1, which means that the effect on the response variable should be linear. For the smooth term work_years the edf is higher than 4 which means that the effect on the response variable is a more complex polynomial. The p-values of all smooth terms show no significance. Hence, there is no evidence that the effect differs from zero.
 
 Parametric terms: Occupation_types shows significance for some of its levels. The same applies to level Y for the variable flag_own_reality.
 
@@ -895,25 +895,22 @@ r.squared.results.gam <- lapply (folds, function(x){
 ```
 
 ```{r Visualization of the R squared, echo=FALSE, message=FALSE}
-#df.r.squared.gam <- transpose(data.frame(r.squared.results.gam))
-#colnames(df.r.squared.gam) <- c("gam.1", "gam.2", "gam.3")
+#df.r.squared.gam <- transpose(base::data.frame(r.squared.results.gam))
+#base::colnames(df.r.squared.gam) <- c("gam.1", "gam.2", "gam.3")
 #rownames(df.r.squared.gam) <- colnames(data.frame(r.squared.results.gam))
 
 #boxplot(df.r.squared.gam)
 #The boxplots are displayed from a picture, since the above code throws errors
 #when kniterin it
-knitr::include_graphics("boxplot_gam.png")
+#knitr::include_graphics("boxplot_gam.png")
 ```
-Overall, it should be noted that R squared is very low suggesting very limited predictive power of these models.
-
+In the boxplot it can be seen that the R squared of the most complex model with six variables has the highest median. The adjusted R squared in this model also has the highest value. The adjusted R squared in this model also has the highest value, which means that we have a slightly better model than the others despite the higher number of variables. Overall, it should be noted that R squared, respectively R squared adjusted is very low suggesting very limited predictive power of these models.
 
 # Support Vector Machine
-
 In the following chapter, a Support Vector Machine is used, trying to predict weather a customer is a good 
 or bad customer.
 
 ## Graphical analysis
-
 To first get an overview of potentially good predictor combinations (e.q. where we can see a 
 threshold between good and bad customers), we plot different predictors against the response variable customer_status_good.
 (we left only two plots for simplicity)
@@ -949,7 +946,6 @@ grid.arrange(ggplot1, ggplot2, ncol=2)
 The graphical analysis doesn't show clear thresholds from different predictor variables for customer_status_good.
 
 ## Data preparation
-
 SVM cannot handle categorical variables directly, they need to be transformed to dummy variables:
 
 ```{r svm preparation,echo=TRUE, warning=FALSE, message=FALSE}
@@ -978,7 +974,6 @@ df.svm$name_income_type_Working <- as.factor(df.svm$name_income_type_Working)
 ```
 
 For making predictions, we split the data. We use 70% of the data to train the SVM. Using basically all potential predictors, we get an accuracy of around 83.8%. To see if we get better results, we reduce the amount of predictors, for example:
-
 ```{r,echo=FALSE,warning=FALSE, message=FALSE}
 # chose variables for SVM
 df.svm.var <-df.svm[,c("customer_status_good",
@@ -1016,8 +1011,6 @@ slice(-indices) %>%
 pull(customer_status_good)
 ```
 
-
-
 ```{r svm, echo=FALSE, warning=FALSE, message=FALSE}
 
 # create SVM
@@ -1047,7 +1040,6 @@ table
 What is visible: Event one single predictor like amt_income_total reaches almost the same accuracy, like all predictors combined.
 
 ## Conclusion SVM
-
 The accuracy of 83.8% is not just a random percentage number, it is close to the percentage of the good customers in the prediction-testing set. The predictors are too weak, to differentiate between good and bad customers, or in other words: good and bad customers are to well spread over the different predictors.
 This can be easily seen graphically:
 
@@ -1055,16 +1047,11 @@ This can be easily seen graphically:
 plot(test_svm, train, amt_income_total ~ work_years)
 
 ```
-
-
 The SVM sees only potential good customers, since it cannot see any differences to bad customers.
 The available predictors don't correspond well to the response variable. Therefore a SVM with the predictors at hand is not a good choice.
 
-
 # Neural Networks
-
 ## Build the network
-
 ```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE, include=TRUE}
 set.seed(1400)
 # Work with copy of df.cc
@@ -1099,11 +1086,7 @@ df.ann.net <- nnet(customer_status_good ~ ., data = df.ann.training, size=15, ma
 
 The model is designed as 41-15-1 network with 646 weights. 11 predictors were added to the model, but it works in total with 41 predictors as some of the variables are factors, which will be converted to dummy variables (0/1 values).
 
-
-
 ## Make Predictions
-
-
 ```{r}
 pred <- predict(df.ann.net, df.ann.testing, type="class")
 cm_nn <- table(pred=pred, true=df.ann.testing$customer_status_good)
@@ -1151,7 +1134,6 @@ head(df.ann.net.imp, 10)
 This table shows the importance of the different predictors (list of top 10 out of 41). This output should not be overinterpreted as the model itself is not suitable to identify bad customers.
 
 ## Conclusion Neural Networks
-
 The research team invested a lot of time to find models, neural network designs and tuning techniques, which is stable and can increase the accuracy over the 84% (which is equal to the share of good customers). Such a model could not be found. Neural networks are flexible and with many variants. They would be able to find complex patterns, but it was not the case with data (especially predictors) received from the client.
 
 Another question, which the analysis cannot answer, is the definition of a "good" accuracy. The client could already benefit by finding a few "true" bad customers. A good customer will pay back the borrowed amount including interest rate and on the other hand the company will loose a lot of money if a bad customer is not able to pay the loan. It could make sense not to rely only on accuracy in this case and focus on identifying bad customers instead.
@@ -1183,7 +1165,6 @@ $y =$ amount of partial payment
 Probability of default is another function based on $x$ and $y$. The higher the value of $x$ and the lower the value of $y$, it can be assumed that the probability of default will be increased.
 
 # Conclusion
-
 In the following table you can find a overview over all used methods, the model used and the respective performance.
 A detailed conclusion can be found after every model-chapter.
 
@@ -1202,7 +1183,6 @@ Personal note:
 Initially, we had high expectations of the data set and the outcome of our models. However, reality hits you hard sometimes. Two things we would like to mention here:
 - Data preparation: A great deal of discussion went into deciding on our data set and coming up with response variables. In some cases, this required transforming the source data into a form that met the needs of the various methods and maintained a consistent goal, "credit-worthiness". Some research into possible ways to define what a bad customer looks like was needed and altering this could change the outcome of our models drastically.
 - Data set: Looking back, we would choose a data set with fewer categorical. Generally speaking, we found it more challenging to work with categorical variables in some models, but much easier in others.
-
 
 
 # Session Information
