@@ -895,16 +895,17 @@ r.squared.results.gam <- lapply (folds, function(x){
 ```
 
 ```{r Visualization of the R squared, echo=FALSE, message=FALSE}
-#df.r.squared.gam <- transpose(base::data.frame(r.squared.results.gam))
-#base::colnames(df.r.squared.gam) <- c("gam.1", "gam.2", "gam.3")
-#rownames(df.r.squared.gam) <- colnames(data.frame(r.squared.results.gam))
+df.r.squared.gam <- data.table::transpose(data.frame(r.squared.results.gam))
+colnames(df.r.squared.gam) <- c("gam.1", "gam.2", "gam.3")
+rownames(df.r.squared.gam) <- colnames(data.frame(r.squared.results.gam))
 
-#boxplot(df.r.squared.gam)
-#The boxplots are displayed from a picture, since the above code throws errors
-#when kniterin it
-#knitr::include_graphics("boxplot_gam.png")
+mean.table <- c(mean(df.r.squared.gam$gam.1), mean(df.r.squared.gam$gam.2), mean(df.r.squared.gam$gam.3))
+names(mean.table) <- c("gam.1", "gam.2", "gam.3")
+mean.table
+
+boxplot(df.r.squared.gam)
 ```
-In the boxplot it can be seen that the R squared of the most complex model with six variables has the highest median. The adjusted R squared in this model also has the highest value. The adjusted R squared in this model also has the highest value, which means that we have a slightly better model than the others despite the higher number of variables. Overall, it should be noted that R squared, respectively R squared adjusted is very low suggesting very limited predictive power of these models.
+When we calculate the mean of the R^2 values produced by the 10-fold cross-validation, we can see that gam.cc.3 has the highest mean R^2, suggesting this best explains the data. The boxplot shows us that there is also the greatest spread with gam.cc.3, indicating that the R^2 value is not as reliable. We can also see that the R^2 of the simplest model with the smooth term amt_income_total has the highest median and the lowest spread. However if we compare in the summary outputs the adjusted R squared of the most complex model has the highest value. We would still tend to use the simpler model, since it contains far fewer variables and the mean values of the R^2 do not differ a lot between all models. Overall, it should be noted that R^2, respectively R squared adjusted is very low suggesting very limited predictive power of these models.
 
 # Support Vector Machine
 In the following chapter, a Support Vector Machine is used, trying to predict weather a customer is a good 
