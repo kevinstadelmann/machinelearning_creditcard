@@ -507,7 +507,7 @@ anova(lm.fit.occupation, lm.fit.occ.realty)
 ```
 Comparing with the previous model (lm.fit.occupation), we see evidence that the more complex model is a better fit to the data. 
 
-### Regression Models with Interaction
+### Regression Models (interaction)
 We had identified 2 variables that showed potential interaction with occupation_type, and 2 with flag_own_realty, we look at these now to determine whether interactions should be included in the model.
 ```{r lm-fit-interaction-hide, include=FALSE}
 lm.fit.interact.1 <- update(lm.fit.occ.realty, . ~ . + amt_income_total + occupation_type:amt_income_total)
@@ -897,7 +897,7 @@ For the smooth terms amt_income_total and age_years the edf is 1, which means th
 
 Parametric terms: Occupation_types shows significance for some of its levels. The same applies to level Y for the variable flag_own_reality.
 
-### Visualization of the smooth terms (even though not significant)
+### Visualization smooth terms
 ```{r Visualization of the smooth terms, echo=FALSE, message=FALSE}
 par(mfrow = c(1,3))
 plot(gam.cc.3, residuals = TRUE, cex = 2)
