@@ -1,0 +1,1203 @@
+---
+title: "Machine Learning Project"
+author: "Jeanette Lee, Kevin Stadelmann, Marc Weber, Patricia Wellhöfer"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_document:
+    css: styles.css
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+    number_sections: true
+---
+
+# Introduction
+The objective of the analysis is to determine the "credit-worthiness" of applicants using socio-demographic information (gender, education, marital status, etc.) and credit history data to predict the probability of repayment and to categorize customers as "good" or "bad".  
+  
+Using the concept of Vintage Analysis, we summarize the credit history to determine the "percent_good", i.e. percentage of times that an individual pay back loans within 60 days, and assign "customer_status_good" to those who repay within 60 days more than 50% of the time. Varying time ranges for credit history can be used (24, 36, 48 months, etc.), in practice, however shorter periods take into account the most recent credit behaviour of each individual. For the purposes of this analysis, we have chosen a 24 month period.  
+  
+Data Source: [link](https://www.kaggle.com/rikdifos/credit-card-approval-prediction)
+(last update: 24-03-2020)
+
+# Setup
+```{r setup, include=TRUE, warning=FALSE, message=FALSE}
+library(magrittr)
+library(data.table)
+library(dplyr)
+library(lubridate)
+library(caret)
+library(knitr)
+library(inspectdf)
+library(ggplot2)
+library(GGally)
+library(gridExtra)
+library(car)
+library(e1071)
+library(tidyr)
+library(tidyverse)
+library(fastDummies)
+library(ROCR)
+library(nnet)
+library(mgcv)
+library(splitTools)
+library(faraway)
+library(multcomp)
+
+opts_chunk$set(fig.align="center", echo=TRUE)
+knit_hooks$set(inline=function(x) { prettyNum(x, big.mark=",") })
+```
+
+# Data Preparation
+## Data Import
+```{r import-data, include=TRUE, cache=TRUE}
+df.ar <- fread("data/application_record.csv", stringsAsFactors = TRUE)
+df.cr <- fread("data/credit_record.csv", stringsAsFactors = TRUE)
+```
+
+## View Data
+### Application Record Dataframe
+This dataset includes the demographic data of applicants.  
+- DAYS_BIRTH and DAYS_EMPLOYED columns count backwards from "current" day (0), yesterday (-1), etc.  
+- DAYS_EMPLOYED is positive, if the person is currently unemployed
+
+**Data Summary**
+```{r datatypes-df-ar, echo=FALSE}
+#kable(sapply(df.ar, class), col.names="type")
+str(df.ar)
+```
+**Sample of Dataset**
+```{r view-df-ar, echo=FALSE}
+head(df.ar) %>% kable()
+```
+
+### Credit Record Dataframe
+This dataset includes the historical data of user behaviour.  
+- MONTHS_BALANCE column counts backward from "current" month (0), previous month (-1), 2 months prior (-2), etc.  
+- STATUS column: 0 = 1-29 days past due, 1 = 30-59 days past due, 2 = 60-89 days overdue, 3 = 90-119 days overdue, 4 = 120-149 days overdue, 5 = overdue or bad debts, write-offs for more than 150 days, C = paid off that month, X = no loan for the month
+  
+**Data Summary**
+```{r datatypes-df-cr, echo=FALSE}
+#kable(sapply(df.cr, class), col.names="type")
+str(df.cr)
+```
+**Sample of Dataset**
+```{r view-df-cr, echo=FALSE}
+head(df.cr) %>% kable()
+```
+
+## Cleaning and Joining Datasets
+### Cleaning application_record.csv
+Removed duplicate IDs from application_record.csv
+```{r clean-df-ar, include=TRUE, collapse=TRUE}
+duplicates <- df.ar %>% group_by(ID) %>% summarise(count = n()) %>% filter(count > 1)
+df.ar.mod <- df.ar %>% filter(!ID %in% duplicates$ID)
+```
+
+### Cleaning credit_record.csv
+The original dataset was made available on 24-03-2020, so it is presumed "current" month is March 2020. From months_balance we create a new column indicating the month for each observation. Observations older than 2 years are removed.  
+  
+Each ID is assigned a "good" or "bad" customer status according to their credit history. If the customer paid off their balance in under 60 days (STATUS = 0, 1, or C) for more than 50% of their balance history, they are determined to be a "good" customer, otherwise they are determined to be a "bad" customer. Additionally, the percentage of times the customer paid off their balance in 60 days is added to the dataset as "percent_good".
+```{r clean-df-cr, include=TRUE}
+# Extract month and year from months_balance in df.cr
+df.cr$month_balance <- format(as.Date("2020-03-24") %m+% months(df.cr$MONTHS_BALANCE), "%B")
+
+# Remove records older than 2 years
+df.cr.mod <- df.cr %>% filter(MONTHS_BALANCE > -24)
+
+# Assign customer status
+df.status <- df.cr.mod %>% group_by(ID) %>%
+  summarise(cnt_status_good = length(STATUS[STATUS==0|STATUS==1|STATUS=='C']), 
+            cnt_status_bad = n() - cnt_status_good, 
+            percent_good = round(cnt_status_good / n() * 100)) %>%
+  mutate(customer_status_good = ifelse(percent_good >= 50, 1, 0)) %>%
+  dplyr::select(ID, customer_status_good, percent_good, cnt_status_good, cnt_status_bad)
+
+df.status$customer_status_good <- as.factor(df.status$customer_status_good)
+```
+
+### Join datasets
+The two cleaned datasets are joined and only records where IDs exist in both are kept.
+
+Cleaning steps undertaken include:  
+- converting columns to numeric (e.g. age_years from DAYS_BIRTH)  
+- changing column names to lower case  
+- remove outliers/fringe cases (cnt_fam_members > 7; as a result also removes cnt_children > 5)  
+- combining factor levels  
+- replacing null and negative values  
+```{r join-datasets, include=TRUE}
+df.cc.raw <- inner_join(x = df.status, y = df.ar.mod, by = "ID") %>%
+  mutate(ID = as.factor(ID),
+         CNT_FAM_MEMBERS = as.integer(CNT_FAM_MEMBERS),
+         age_years = as.numeric(round(DAYS_BIRTH * (-1) / 365.25), 0),       # days -> years
+         work_years = as.numeric(round((DAYS_EMPLOYED * (-1) / 365.25), 0)), # days -> years
+         FLAG_MOBIL = as.factor(FLAG_MOBIL),
+         FLAG_WORK_PHONE = as.factor(FLAG_WORK_PHONE),
+         FLAG_PHONE = as.factor(FLAG_PHONE),
+         FLAG_EMAIL = as.factor(FLAG_EMAIL))
+
+setnames(df.cc.raw, tolower(names(df.cc.raw)))   # change column names to lower case
+```
+```{r view-levels, eval=FALSE}
+df.cc.raw %>% dplyr::select(-id) %>% select_if(is.factor) %>% sapply(., FUN = table)
+table(df.cc.raw$cnt_fam_members)
+table(df.cc.raw$cnt_children)
+```
+```{r join-datasets-2, include=TRUE}
+df.cc.raw <- df.cc.raw[df.cc.raw$cnt_fam_members < 7, ]
+
+# combine 'Academic degree' with 'Higher education' and set order of levels in education type
+df.cc.raw$name_education_type <- recode_factor(df.cc.raw$name_education_type, "Academic degree" = "Higher education")
+df.cc.raw$name_education_type <- factor(df.cc.raw$name_education_type, levels=c("Lower secondary", "Secondary / secondary special", "Incomplete higher", "Higher education"), ordered = TRUE)
+
+df.cc.raw$work_years[df.cc.raw$work_years == '-1000'] <- NA                  # -ve = pensioner
+levels(df.cc.raw$occupation_type)[levels(df.cc.raw$occupation_type)==""] <- "NA"
+
+# select columns (exclude months_balance, days_birth, days_employed and flag_mobil)
+df.cc <- df.cc.raw %>%
+  dplyr::select(id, 
+         code_gender,
+         age_years,
+         name_education_type,
+         name_income_type,
+         name_housing_type,
+         name_family_status,
+         cnt_children,
+         cnt_fam_members,
+         flag_own_car,
+         flag_own_realty,
+         work_years,
+         amt_income_total,
+         occupation_type,
+         flag_work_phone,
+         flag_phone,
+         flag_email,
+         customer_status_good,
+         percent_good,
+         cnt_status_good, 
+         cnt_status_bad)
+```
+
+### Remove duplicates and NA
+Some IDs appear to be the same individual (with different IDs) as all other columns are the same. We only keep one observation, removing duplicates.
+```{r remove-dupes}
+df.cc <- df.cc[!duplicated(df.cc[c(2:17)]),]
+df.cc <- na.omit(df.cc)                                                        # remove NA-values
+```
+```{r remove-df, include=FALSE}
+rm("df.ar", "df.ar.mod", "df.cc.raw", "df.cr", "df.cr.mod", "df.status", "duplicates")
+```
+
+### Check Final Dataframe
+**Data Summary**
+```{r summary-df-cc-str, echo=FALSE}
+str(df.cc)
+```
+**Sample of Dataset**
+```{r summary-df-cc-head, echo=FALSE}
+head(df.cc) %>% kable()
+```
+
+# Linear Model
+The scope of this analysis is to be able to predict the percentage of times that an individual pays off their credit balance within 60 days.
+
+Note: while our dataset includes the continuous variable amt_income_total, which was initially chosen as the dependent variable for this method (and is possibly a more natural prediction based on the demographic data available in our dataset), we ultimately decided on percent_good due to it's more practical usage and tie-in to the other methods used here.
+
+## Graphical Analysis
+### Continuous Variables
+We start the graphical analysis by plotting the response variable (i.e. percent_good) against each of the predictors age_years and work_years, however see no clear relationship. We do, however, see a slightly negative relationship with amt_total_income.
+```{r lm-ga-age, include=FALSE, message=FALSE}
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = age_years)) +
+  geom_point() + geom_smooth()
+```
+
+```{r lm-ga-workyears, include=FALSE, message=FALSE}
+ggplot(data = subset(df.cc, work_years > 0), mapping = aes(y = percent_good, x = work_years)) +
+  geom_point() + geom_smooth()
+```
+```{r lm-ga-income, message=FALSE}
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = amt_income_total)) +
+  geom_point() + geom_smooth()
+```
+Here, we can see that there are few accounts (`r count(df.cc[df.cc$amt_income_total > 750000,])`) with a total income above 750K, it would be recommended to omit or recenter focus for regression as accuracy of the prediction would be reduced in this higher income range.
+
+### Categorical Variables
+Next we plot the categorical variables against our dependent variable. The boxplots indicate that the median for name_education_type, name_housing_type, name_family_status, occupation_type, and flag_realty are the same (100%), however their factor levels differ in spread. This suggests there may exist a relationship between these variables and the dependent variable.  
+```{r lm-ga-categorical, include=TRUE}
+plot.ed <- ggplot(data = df.cc, mapping = aes(y = percent_good, x = name_education_type)) +
+  geom_boxplot() + theme(axis.text.x=element_text(angle=45, hjust=1)) + 
+  geom_text(aes(label = ..count..), y = 103, stat = "count", size = 3, color="darkcyan") + coord_cartesian(ylim=c(0,105))
+# Note: only code for one plot is shown here due to limited space
+```
+```{r lm-ga-categorical-plot, echo=FALSE}
+plot.housing <- ggplot(data = df.cc, mapping = aes(y = percent_good, x = name_housing_type)) +
+  geom_boxplot() + theme(axis.text.x=element_text(angle=45, hjust=1)) + 
+  geom_text(aes(label = ..count..), y = 103, stat = "count", size = 3, color="darkcyan") + coord_cartesian(ylim=c(0,105))
+
+plot.occupation <- ggplot(data = df.cc, mapping = aes(y = percent_good,x = occupation_type)) +
+  geom_boxplot() + theme(axis.text.x=element_text(angle=45, hjust=1)) + 
+  geom_text(aes(label = ..count..), y = 105, stat = "count", size = 3, color="darkcyan", angle = 50) + coord_cartesian(ylim=c(0,105))
+
+plot.famstatus <- ggplot(data = df.cc, mapping = aes(y = percent_good, x = name_family_status)) +
+  geom_boxplot() + theme(axis.text.x=element_text(angle=45, hjust=1)) + 
+  geom_text(aes(label = ..count..), y = 103, stat = "count", size = 3, color="darkcyan") + coord_cartesian(ylim=c(0,105))
+
+plot.realty <- ggplot(data = df.cc, mapping = aes(y = percent_good, x = flag_own_realty)) +
+  geom_boxplot() + theme(axis.text.x=element_text(angle=45, hjust=1)) + 
+  geom_text(aes(label = ..count..), y = 103, stat = "count", size = 3, color="darkcyan") + coord_cartesian(ylim=c(0,105))
+
+plot.income <- ggplot(data = df.cc, mapping = aes(y = percent_good, x = name_income_type)) + 
+  geom_boxplot() + theme(axis.text.x=element_text(angle=45, hjust=1)) + 
+  geom_text(aes(label = ..count..), y = 103, stat = "count", size = 3, color="darkcyan") + coord_cartesian(ylim=c(0,105))
+
+grid.arrange(plot.ed, plot.housing, plot.famstatus, ncol=3)
+grid.arrange(plot.occupation, plot.realty, plot.income, ncol=3)
+```
+Inspecting the predictor name_income_type, pensioners and students seem to have lower percentage of paying off loans within 60 days than other income types and so we consider this variable when fitting the model. We do need to be cautious here, as these two factor levels have very small base sizes.  
+  
+The remaining categorical variables seem to show no influence on percent_good, based on inspection of the boxplots.
+```{r lm-ga-factor-noinfluence, include=FALSE}
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = code_gender)) +
+  geom_boxplot()
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = flag_own_car)) +
+  geom_boxplot()
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = flag_email)) +
+  geom_boxplot()
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = flag_work_phone)) +
+  geom_boxplot()
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = flag_phone)) +
+  geom_boxplot()
+```
+
+### Count Variables
+Plotting the variables cnt_fam_members and cnt_children, we see some difference in spread. Intuitively, we know there is a relationship between the two variables.
+```{r lm-ga-count}
+plot.children <- ggplot(data = df.cc, mapping = aes(y = percent_good, x = cnt_children, group = as.factor(cnt_children))) + geom_boxplot() +
+  geom_text(aes(label = ..count..), y = 105, stat = "count", size = 3, color="darkcyan") + coord_cartesian(ylim=c(0,105))
+
+plot.family <- ggplot(data = df.cc, mapping = aes(y = percent_good, x = cnt_fam_members, group = as.factor(cnt_fam_members))) + geom_boxplot() + 
+  geom_text(aes(label = ..count..), y = 105, stat = "count", size = 3, color="darkcyan") + coord_cartesian(ylim=c(0,105))
+
+grid.arrange(plot.children, plot.family, nrow=2)
+```
+
+### Collinearity
+With a few of the variables, there is the possibility of collinearity, specifically between age_years and work_years, and cnt_fam_members and cnt_children. We inspect this by plotting the variables against one another.
+```{r colinearity-years}
+plot.c.years <- ggplot(data = df.cc, mapping = aes(y = work_years, x = age_years)) + geom_point()
+
+plot.c.family <- ggplot(data = df.cc, mapping = aes(y = cnt_fam_members, x = cnt_children)) + geom_point()
+
+grid.arrange(plot.c.years, plot.c.family, ncol=2)
+```
+```{r colinearity-years-vif, eval=FALSE}
+vif(lm(percent_good ~ age_years + work_years, data = df.cc))
+vif(lm(percent_good ~ cnt_children + cnt_fam_members, data = df.cc))
+```
+Looking at the count variables, we can see the pairs are correlated. With a GVIF value of `r vif(lm(percent_good ~ cnt_children + cnt_fam_members, data = df.cc))[1]`, it is recommended that one of the variables cnt_children or cnt_fam_members should be dropped.
+
+### Interactions
+Next we investigate whether there are interactions between the variables previously identified. Despite no clear relationship between age_year and percent_good, there could still be an interaction with other variables, so we start with age_year plotted against the other possible independent variables and make the following observations:  
+- different housing types seem to have different slopes, suggesting an interaction with age  
+- customers with 5 or 6 family members seem to be concentrated in the 30-45 age range, while the other family sizes are more distributed  
+- few data points for some occupation types; no realty agents younger than 30  
+  
+```{r check-interact-age, message=FALSE}
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = age_years, group = name_housing_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_housing_type) + 
+  ggtitle("Percent_good by age and housing type")
+```
+```{r check-interact-age-hide, include=FALSE, message=FALSE}
+## variables to consider as IVs: age_years, amt_income_total, cnt_fam_members, name_education_type, name_housing_type, occupation_type, name_family_status, name_income_type
+pairs(~ age_years + amt_income_total, data = subset(df.cc, work_years > 0), pch = 20, col = "darkcyan")
+
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = age_years, group = as.factor(cnt_fam_members))) +
+  geom_point() + geom_smooth() + facet_wrap(~as.factor(cnt_fam_members)) + ggtitle("Percent_good by age and family members")
+
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = age_years, group = name_education_type)) +
+  geom_point() + geom_smooth() + facet_wrap(~name_education_type) + ggtitle("Percent_good by age and education")
+
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = age_years, group = name_housing_type)) +
+  geom_point() + geom_smooth() + facet_wrap(~name_housing_type) + ggtitle("Percent_good by age and housing type")
+
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = age_years, group = occupation_type)) +
+  geom_point() + geom_smooth() + facet_wrap(~occupation_type) + ggtitle("Percent_good by age and occupation")
+
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = age_years, group = name_family_status)) +
+  geom_point() + geom_smooth() + facet_wrap(~name_family_status) + ggtitle("Percent_good by age and family status")
+
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = age_years, group = name_income_type)) +
+  geom_point() + geom_smooth() + facet_wrap(~name_income_type) + ggtitle("Percent_good by age and income type")
+
+
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = age_years, group = flag_own_realty)) +
+  geom_point() + geom_smooth() + facet_wrap(~flag_own_realty) + ggtitle("Percent_good by age and realty owner")
+```
+
+With amt_income_total, we identify some potential interactions with name_education_type, name_housing_type, and occupation_type.
+```{r check-interact-income, message=FALSE}
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = amt_income_total, group = name_education_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_education_type) + 
+  ggtitle("Percent_good by total income and education")
+# Note: only code and single plot are shown here due to limited space
+```
+```{r check-interact-income-hide, include=FALSE, message=FALSE}
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = amt_income_total, group = name_housing_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_housing_type) + ggtitle("Percent_good by income and housing type")
+
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = amt_income_total, group = occupation_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~occupation_type) + ggtitle("Percent_good by income and occupation")
+
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = amt_income_total, group = as.factor(cnt_fam_members))) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~as.factor(cnt_fam_members)) + ggtitle("Percent_good by income and family members")
+# difference in slope of regression line by cnt_fam_members suggest interaction
+
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = amt_income_total, group = name_family_status)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_family_status) + ggtitle("Percent_good by income and family status")
+# differing regression line by marital status suggests interaction
+
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = amt_income_total, group = name_income_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_income_type) + ggtitle("Percent_good by income and income type")
+# no clear interaction
+
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = amt_income_total, group = flag_own_realty)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~flag_own_realty) + ggtitle("Percent_good by income and realty owner")
+# lower income for non-realty owners
+```
+Here it seems that customers with only lower secondary education are concentrated at a lower total income (< 250K). With occupation_type (plot not displayed), we can see that some occupation types (cleaning staff, cooking staff, low-skill laborers, realty agents, secretaries, waiters) are primarily concentrated at a lower income level.  
+  
+We also see some interaction between cnt_fam_members and flag_own_realty.
+```{r view-interact-cntfam-realty, message=FALSE}
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = cnt_fam_members, group = flag_own_realty)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~flag_own_realty) + 
+  ggtitle("Percent_good by family members and realty owner")
+```
+
+```{r no-interactions, include=FALSE, message=FALSE}
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = cnt_fam_members, group = name_education_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_education_type) + ggtitle("Percent_good by family members and education")
+
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = cnt_fam_members, group = name_housing_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_housing_type) + ggtitle("Percent_good by family members and housing type")
+
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = cnt_fam_members, group = occupation_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~occupation_type) + ggtitle("Percent_good by family members and occupation")
+
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = cnt_fam_members, group = name_family_status)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_family_status) + ggtitle("Percent_good by family members and family status")
+
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = cnt_fam_members, group = name_income_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_income_type) + ggtitle("Percent_good by family members and income type")
+
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = name_education_type, group = name_housing_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_housing_type) + ggtitle("Percent_good by education and housing type")
+
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = name_education_type, group = occupation_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~occupation_type) + ggtitle("Percent_good by education and occupation")
+
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = name_education_type, group = name_family_status)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_family_status) + ggtitle("Percent_good by education and family status")
+
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = name_education_type, group = name_income_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_income_type) + ggtitle("Percent_good by education and income type")
+
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = name_education_type, group = flag_own_realty)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~flag_own_realty) + ggtitle("Percent_good by education and realty owner")
+
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = name_housing_type, group = occupation_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~occupation_type) + ggtitle("Percent_good by housing type and occupation")
+
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = name_housing_type, group = name_family_status)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_family_status) + ggtitle("Percent_good by housing type and family status")
+
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = name_housing_type, group = name_income_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_income_type) + ggtitle("Percent_good by housing type and income type")
+
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = name_housing_type, group = flag_own_realty)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~flag_own_realty) + ggtitle("Percent_good by housing type and realty owner")
+
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = occupation_type, group = name_family_status)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_family_status) + ggtitle("Percent_good by occupation and family status")
+
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = occupation_type, group = name_income_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_income_type) + ggtitle("Percent_good by occupation and income type")
+
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = occupation_type, group = flag_own_realty)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~flag_own_realty) + ggtitle("Percent_good by occupation and realty owner")
+
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = name_family_status, group = name_income_type)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~name_income_type) + ggtitle("Percent_good by family status and income type")
+
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = name_family_status, group = flag_own_realty)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~flag_own_realty) + ggtitle("Percent_good by family status and realty owner")
+
+ggplot(data = df.cc, mapping = aes(y = percent_good, x = name_income_type, group = flag_own_realty)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(~flag_own_realty) + ggtitle("Percent_good by income type and realty owner")
+```
+
+Possible interactions identified from plots:  
+- age_year:name_housing_type, age_year:flag_own_realty, age_year:cnt_fam_members  
+- amt_income_total:name_housing_type, amt_income_total:occupation_type, amt_income_total:name_family_status, amt_income_total:name_education_type  
+- cnt_fam_members:name_family_status, cnt_fam_members:education(lower secondary), cnt_fam_members:flag_own_realty  
+- name_education_type:occupation_type 
+
+## Fit Linear Models
+### Global F-test
+Beginning with a quick global F-test, we check if any of the predictors have an influence on the response variable, by comparing the full model, lm.fit.1 (all variables and interactions), against a model with only the intercept (lm.fit.0). This gives evidence that at least one of predictors plays a relevant role, albeit weakly. Using drop1() suggests keeping the interactions flag_own_realty:cnt_fam_members and name_education_type:occupation_type.  
+```{r lm-global, include=FALSE}
+lm.fit.0 <- lm(percent_good ~ 1, data = df.cc)
+
+lm.fit.1 <- lm(percent_good ~ amt_income_total + name_education_type + name_housing_type + name_family_status + occupation_type + flag_own_realty + name_income_type + cnt_fam_members + age_years + age_years:name_housing_type + age_years:cnt_fam_members + amt_income_total:name_education_type + amt_income_total:name_housing_type + amt_income_total:occupation_type + amt_income_total:cnt_fam_members + amt_income_total:name_family_status + cnt_fam_members:flag_own_realty + cnt_fam_members:name_education_type + cnt_fam_members:name_family_status + name_education_type:occupation_type, data = df.cc)
+```
+```{r lm-global-test, include=FALSE}
+anova(lm.fit.0, lm.fit.1)
+drop1(lm.fit.1, test = "F")
+```
+Refitting and checking the new model (lm.fit.2) against the model with only the intercept (lm.fit.0) gives a stronger indicator that at least one of the variables has an influence. 
+```{r lm-refit, echo=FALSE}
+lm.fit.2 <- lm(percent_good ~ name_education_type + occupation_type + flag_own_realty + cnt_fam_members + cnt_fam_members:flag_own_realty + name_education_type:occupation_type, data = df.cc)
+```
+```{r lm-refit-test}
+anova(lm.fit.0, lm.fit.2)
+drop1(lm.fit.2, test = "F")
+```
+
+### Simple Regression Models
+An alternate method of model development, we start by fitting simple regression models with each of the identified independent variables and use summary() to test continuous variables and drop1() to test categorical variables.
+```{r lm-no-interaction-hide, include=FALSE}
+lm.fit.age <- lm(percent_good ~ age_years, data = df.cc)
+summary(lm.fit.age)   # not statistically significant
+
+lm.fit.income <- lm(percent_good ~ amt_income_total, data = df.cc)
+summary(lm.fit.income)   # not statistically significant
+
+lm.fit.cntfam <- lm(percent_good ~ cnt_fam_members, data = df.cc)
+drop1(lm.fit.cntfam, test = "F")   # not statistically significant
+
+lm.fit.education <- lm(percent_good ~ name_education_type, data = df.cc)
+drop1(lm.fit.education, test = "F")   # not statistically significant
+
+lm.fit.housing <- lm(percent_good ~ name_housing_type, data = df.cc)
+drop1(lm.fit.housing, test = "F")   # not statistically significant
+```
+
+```{r lm-fit-occupation}
+lm.fit.occupation <- lm(percent_good ~ occupation_type, data = df.cc)
+drop1(lm.fit.occupation, test = "F")   # statistically significant
+```
+The output shows that occupation_type is statistically significant and using anova() to compare against a model that contains only an intercept, there is strong evidence the model with more parameters better fits the data (lower RSS for model with occupation_type, significant p-value), as seen in the output below.
+```{r lm-fit-occ-anova}
+anova(lm.fit.0, lm.fit.occupation)
+```
+Adding the other variables, we see that only flag_own_realty is statistically significant.
+```{r lm-no-interaction2-hide, include=FALSE}
+lm.fit.occ.fam <- update(lm.fit.occupation, . ~ . + name_family_status)
+drop1(lm.fit.occ.fam, test = "F")   # not statistically significant
+
+lm.fit.occ.incometype <- update(lm.fit.occupation, . ~ . + name_income_type)
+drop1(lm.fit.occ.incometype, test = "F")   # not statistically significant
+```
+
+```{r lm-fit-occ-realty}
+lm.fit.occ.realty <- update(lm.fit.occupation, . ~ . + flag_own_realty)
+drop1(lm.fit.occ.realty, test = "F")
+anova(lm.fit.occupation, lm.fit.occ.realty)
+```
+Comparing with the previous model (lm.fit.occupation), we see evidence that the more complex model is a better fit to the data. 
+
+### Regression Models (interaction)
+We had identified 2 variables that showed potential interaction with occupation_type, and 2 with flag_own_realty, we look at these now to determine whether interactions should be included in the model.
+```{r lm-fit-interaction-hide, include=FALSE}
+lm.fit.interact.1 <- update(lm.fit.occ.realty, . ~ . + amt_income_total + occupation_type:amt_income_total)
+drop1(lm.fit.interact.1, test = "F")   # insignificant interaction
+
+lm.fit.interact.2 <- update(lm.fit.occ.realty, . ~ . + name_education_type + occupation_type:name_education_type)
+drop1(lm.fit.interact.2, test = "F")   # insignificant interaction
+
+lm.fit.interact.3 <- update(lm.fit.occ.realty, . ~ . + age_years + flag_own_realty:age_years)
+drop1(lm.fit.interact.3, test = "F")   # insignificant interaction
+```
+
+```{r lm-fit-interaction}
+lm.fit.interact.4 <- update(lm.fit.occ.realty, . ~ . + cnt_fam_members + flag_own_realty:cnt_fam_members)
+drop1(lm.fit.interact.4, test = "F")
+anova(lm.fit.occ.realty, lm.fit.interact.4)
+```
+Here there is only weak evidence that the flag_own_realty:cnt_fam_members interaction plays a role.
+
+## Measures of Fit 
+### In-sample performance
+To quantify the goodness of fit, we look at the R^2 and adjusted R^2 values:  
+
+```{r lm-r2-insample, echo=FALSE}
+r2.in <- c(round(summary(lm.fit.occupation)$r.squared, 5), round(summary(lm.fit.occ.realty)$r.squared, 5), round(summary(lm.fit.interact.4)$r.squared, 5))
+
+adj.r2.in <- c(round(summary(lm.fit.occupation)$adj.r.squared, 5), round(summary(lm.fit.occ.realty)$adj.r.squared, 5), round(summary(lm.fit.interact.4)$adj.r.squared, 5))
+
+r2.table <- data.frame("R-squared"= r2.in, "Adjusted R-squared" = adj.r2.in, row.names = c("occupation_type", "occupation_type + flag_own_realty", "occupation_type + flag_own_realty + flag_own_realty:cnt_fam_members"))
+
+r2.table %>% kable()
+```
+
+We see that the model with interaction has the best R^2 value, and, taking into account the differing complexity of the models, it still shows a slightly higher adjusted R^2, but not by much.
+
+### Out-of-sample performance
+Now, we use part of the data to train the model and then test predictive performance on the remaining portion.
+```{r lm-subset}
+set.seed(1)
+indices <- createDataPartition(df.cc$percent_good, p=.85, list=F)
+train <- df.cc %>% slice(indices)
+test_in <- df.cc %>% slice(-indices) %>% dplyr::select(-customer_status_good, -percent_good)
+test_true <- df.cc %>% slice(-indices) %>% dplyr::select(percent_good)
+```
+
+```{r lm-predict}
+# lm.fit.occupation
+lm.train.1 <- lm(formula=formula(lm.fit.occupation), data = train)
+predict.1.test <- predict(object = lm.train.1, newdata = test_in)
+
+# lm.fit.occ.realty
+lm.train.2 <- lm(formula=formula(lm.fit.occ.realty), data = train)
+predict.2.test <- predict(object = lm.train.2, newdata = test_in)
+
+# lm.fit.interact.4
+lm.train.3 <- lm(formula=formula(lm.fit.interact.4), data = train)
+predict.3.test <- predict(object = lm.train.3, newdata = test_in)
+```
+This yields the following R^2 values:
+```{r lm-r2-table, echo=FALSE}
+r2 <- c(round(cor(predict.1.test, test_true)^2, 5), round(cor(predict.2.test, test_true)^2, 5), round(cor(predict.3.test, test_true)^2, 5))
+names(r2) <- c("occupation_type", "occupation_type + flag_own_realty", "occupation_type + flag_own_realty + flag_own_realty:cnt_fam_members")
+r2 %>% kable(col.names = "R-squared")
+```
+Comparing the in-sample R^2 values with the outer-sample R^2 values, we see that they are consistently lower for the test data. As the model with interaction has an out-of-sample R-squared of about 3%, we conclude that it is better suited to make predictions.
+
+## Conclusion (Linear Model)
+It was interesting to see that the majority of boxplots differed only in spread and not the median. This made it challenging to find and determine variables that would make good predictors for our chosen response variable, percent_good. With the number of variables in our dataset, a lot of time was spent in graphical analysis in an effort to narrow down the potential influencers. The analysis in this work has shown that demographic variables are, in this case, weak predictors of loan repayment.
+
+# GLM Poisson Model
+Here we wish to predict the count of "good status", which counts the number of times where loans are repayed within 60 days (i.e. status = 0, 1, or C). In practice, it could be beneficial to predict different repayment statuses in order to find the right balance of interest repayed to optimize earnings.  
+  
+First we check our response variable cnt_status_good and see that it is not in the form of a bell curve (normal distribution), indicating that a normal linear model is not appropriate.
+```{r glm-p-hist, echo=FALSE}
+hist(df.cc$cnt_status_good)
+```
+  
+We also check the mean `r round(mean(df.cc$cnt_status_good), 2)` and variance `r round(var(df.cc$cnt_status_good), 2)`. As the variance is much greater than the mean, this suggests we will have over-dispersion in the model, suggesting a quasi-poisson model is more appropriate. We will start with a poisson model, regardless.
+
+## Graphical Analysis
+As we have here a different dependent variable than in for the linear model, we once again begin with graphical analysis of potential predictors against the response variable. Note: as we had previously determined in section 4.1.4, based on collinearity between cnt_fam_members and cnt_children, we exclude the latter variable in our analysis.  
+  
+From the plots below, it can be seen that name_income_type and  occupation_type seem to have differences among levels with respect to counts. The other plots we have hidden as there were no clear differences among levels.
+```{r glm-p-ga, echo=FALSE}
+p.template <- ggplot(data = df.cc, mapping = aes(y = cnt_status_good)) + geom_boxplot() + 
+  geom_text(aes(label = ..count..), y = -1, stat = "count", size = 3, color="darkcyan", angle = 50) + coord_cartesian(ylim=c(-2, 25))
+
+glm.plot.income <- p.template + aes(x = name_income_type) + theme(axis.text.x=element_text(angle=45, hjust=1)) + 
+  geom_hline(yintercept=mean(df.cc$cnt_status_good), color="red")
+
+glm.plot.occ <- p.template + aes(x = occupation_type) + theme(axis.text.x=element_text(angle=45, hjust=1)) + 
+  geom_hline(yintercept=mean(df.cc$cnt_status_good), color="red")
+
+grid.arrange(glm.plot.income, glm.plot.occ, ncol=2, widths=c(1, 2))
+```
+```{r glm-p-ga-hide, include=FALSE}
+p.template + aes(x = code_gender)
+p.template + aes(x = name_education_type)
+p.template + aes(x = name_housing_type)
+p.template + aes(x = name_family_status)
+p.template + aes(x = as.factor(cnt_fam_members))
+p.template + aes(x = flag_own_car)
+p.template + aes(x = flag_own_realty)
+p.template + aes(x = flag_work_phone)
+p.template + aes(x = flag_phone)
+p.template + aes(x = flag_email)
+```
+With name_income_type, we see that:  
+- pensioners have higher much median than other income types  
+- students have lowest variability, followed by pensioners  
+  
+For occupation_type:  
+- cooking staff & realty agents have lower median than other occupation types  
+- variability is not constant among groups; realty agents also have much lower variability  
+
+```{r glm-p-ga-continuous, include=FALSE}
+ggplot(data = df.cc, mapping = aes(y = cnt_status_good, x = age_years)) + geom_point()
+ggplot(data = df.cc, mapping = aes(y = cnt_status_good, x = amt_income_total)) + geom_point()
+ggplot(data = df.cc, mapping = aes(y = cnt_status_good, x = work_years)) + geom_point()
+```
+
+## Fit Poisson Models
+Now we fit the model using a poisson model with both variables and look at the result summary.
+```{r glm-p-fit-both}
+fit.glm.p <- glm(cnt_status_good ~ name_income_type + occupation_type, 
+                 data = df.cc, family = poisson(link = "log"))
+tail(capture.output(summary(fit.glm.p)), 8)
+```
+Before interpreting the results, we check whether over- or under-dispersion exists. Here we confirm our initial suspicion that over-dispersion exists, since the *residual deviance* is greater than the degrees of freedom, meaning the estimates are correct, but the standard errors are not and thus unaccounted for by the model and we should use instead a *quasi-poisson* model:
+
+```{r glm-qp-fit-both}
+fit.glm.qp <- glm(cnt_status_good ~ name_income_type + occupation_type, 
+                  data = df.cc, family = quasipoisson(link = "log"))
+tail(capture.output(summary(fit.glm.qp)), 8)
+```
+We see that the dispersion parameter has now increased, while null deviance and residual deviance with their respective degrees of freedom have remained unchanged.
+
+## Test if variables play a role
+First, we start by testing the quasipoisson model with 2 predictor variables against a model that only includes the intercept.
+```{r glm-qp-intercept, include=FALSE}
+fit.glm.qp.0 <- update(fit.glm.qp, . ~ . - name_income_type - occupation_type)
+anova(fit.glm.qp.0, fit.glm.qp, test = "F")
+```
+```{r glm-qp-test-vars, eval=FALSE}
+fit.glm.qp.0 <- update(fit.glm.qp, . ~ . - name_income_type - occupation_type)
+anova(fit.glm.qp.0, fit.glm.qp, test = "F")
+```
+Here we saw weak evidence (not displayed) that at least one of the variables plays a role, so we compare the model with only the intercept against a quasi-poisson model that includes only one of the predictors. While we test both of our predictors, name_income_type and occupation_type, we show only one here.
+```{r glm-qp-test-income, include=FALSE}
+fit.glm.qp.income <- update(fit.glm.qp, . ~ . - occupation_type)
+```
+```{r glm-qp-test-occupation, echo=FALSE}
+fit.glm.qp.occupation <- update(fit.glm.qp, . ~ . - name_income_type)
+anova(fit.glm.qp.0, fit.glm.qp.occupation, test = "F")
+```
+From the outputs, we see there is weak evidence that occupation_type plays a role (above), however no evidence that name_income_type plays a role (not displayed), so we test again to compare a model with only occupation_type against the full model with both predictors.
+```{r glm-qp-test-both, echo=FALSE}
+anova(fit.glm.qp.occupation, fit.glm.qp, test = "F")
+```
+There is no evidence that the more complex model is better, so we stick with the quasi-poisson model that includes only occupation_type as the predictor and check with summary() to verify a quasipoisson model is needed. 
+
+```{r glm-p-fit-occupation, echo=FALSE}
+fit.glm.p.occupation <-  glm(cnt_status_good ~ occupation_type, data = df.cc, family = poisson(link = "log"))
+tail(capture.output(summary(fit.glm.p.occupation)), 8)
+```
+This is confirmed as over-dispersion is again evident for the poisson model cnt_status_good ~ occupation_type.
+
+## Interpreting the coefficients
+As the function *glm* takes the log, we remember to reverse this when interpreting the coefficients. Thus, we see the expected number of counts in reference group "NA" is `r round(exp(coef(fit.glm.qp.occupation))["(Intercept)"], 0)`, which is confirmed in the boxplot above.  
+  
+Then we interpret the coefficients for the other groups.
+```{r glm-qp-fit-estimates, echo=FALSE}
+coef.est.occupation <- c(round(exp(coef(fit.glm.qp.occupation))["occupation_typeAccountants"], 3),
+                     round(exp(coef(fit.glm.qp.occupation))["occupation_typeCleaning staff"], 3),
+                     round(exp(coef(fit.glm.qp.occupation))["occupation_typeCooking staff"], 3),
+                     round(exp(coef(fit.glm.qp.occupation))["occupation_typeCore staff"], 3),
+                     round(exp(coef(fit.glm.qp.occupation))["occupation_typeDrivers"], 3),
+                     round(exp(coef(fit.glm.qp.occupation))["occupation_typeHR staff"], 3),
+                     round(exp(coef(fit.glm.qp.occupation))["occupation_typeHigh skill tech staff"], 3),
+                     round(exp(coef(fit.glm.qp.occupation))["occupation_typeIT staff"], 3),
+                     round(exp(coef(fit.glm.qp.occupation))["occupation_typeLaborers"], 3),
+                     round(exp(coef(fit.glm.qp.occupation))["occupation_typeLow-skill Laborers"], 3),
+                     round(exp(coef(fit.glm.qp.occupation))["occupation_typeManagers"], 3),
+                     round(exp(coef(fit.glm.qp.occupation))["occupation_typeMedicine staff"], 3),
+                     round(exp(coef(fit.glm.qp.occupation))["occupation_typePrivate service staff"], 3),
+                     round(exp(coef(fit.glm.qp.occupation))["occupation_typeRealty agents"], 3),
+                     round(exp(coef(fit.glm.qp.occupation))["occupation_typeSales staff"], 3),
+                     round(exp(coef(fit.glm.qp.occupation))["occupation_typeSecretaries"], 3),
+                     round(exp(coef(fit.glm.qp.occupation))["occupation_typeSecurity staff"], 3),
+                     round(exp(coef(fit.glm.qp.occupation))["occupation_typeWaiters/barmen staff"], 3))
+
+names(coef.est.occupation) <- c("Accountants", "Cleaning staff", "Cooking staff", "Core staff", 
+                            "Drivers", "HR staff", "High skill tech staff", "IT staff", 
+                            "Laborers", "Low-skill Laborers", "Managers", "Medicine staff", 
+                            "Private service staff", "Realty agents", "Sales staff", "Secretaries",
+                            "Security staff", "Waiters/barmen staff")
+
+coef.est.occupation
+```
+As there are 19 levels, including the reference level, we will only include a few interpretations here.
+
+For coefficients < 1, this indicates that we expect to see *fewer* cnt_status_good (i.e. status=0, 1 or C) than the reference level "NA". For example,  
+- Accountants: `r (round(exp(coef(fit.glm.qp.occupation))["occupation_typeAccountants"], 3)-1)*(-100)`% fewer than "NA"  
+- Cleaning staff: `r (round(exp(coef(fit.glm.qp.occupation))["occupation_typeCleaning staff"], 3)-1)*(-100)`% fewer than "NA"  
+- Cooking staff: `r (round(exp(coef(fit.glm.qp.occupation))["occupation_typeCooking staff"], 3)-1)*(-100)`% fewer than "NA"  
+  
+For coefficients > 1, this indicates that we expect to see *more* cnt_status_good than the reference level "NA". For example:  
+- HR staff: `r (round(exp(coef(fit.glm.qp.occupation))["occupation_typeHR staff"], 3)-1)*100`% more than "NA"  
+- IT staff: `r (round(exp(coef(fit.glm.qp.occupation))["occupation_typeIT staff"], 3)-1)*100`% more than "NA"  
+- Secretaries: `r (round(exp(coef(fit.glm.qp.occupation))["occupation_typeSecretaries"], 3)-1)*100`% more than "NA"  
+
+## Test Contrasts
+As we had determined that occupation_type plays a role, we now test the hypothesis whether the levels "Realty agents" and "Cooking staff" significantly differ from the others.
+```{r glm-qp-test-contrasts, include=FALSE}
+occ.contrasts <- c(1/17, 1/17, 1/17, -1/2, 1/17, 1/17, 1/17, 1/17, 1/17, 1/17, 1/17, 1/17, 1/17, 1/17, -1/2, 1/17, 1/17, 1/17, 1/17)
+
+names(occ.contrasts) <- c("NA", "Accountants", "Cleaning staff", "Cooking staff", "Core staff", 
+                          "Drivers", "HR staff", "High skill tech staff", "IT staff", 
+                          "Laborers", "Low-skill Laborers", "Managers", "Medicine staff",
+                          "Private service staff", "Realty agents", "Sales staff", "Secretaries",
+                          "Security staff", "Waiters/barmen staff")
+
+glht.cntgood <- glht(fit.glm.qp.occupation, linfct = mcp(occupation_type = occ.contrasts))
+```
+
+```{r glm-qp-contrast-summary, echo=FALSE}
+summary(glht.cntgood)
+```
+This confirms the hypothesis from the graphical analysis, that there is a slight difference between "Realty agents"/"Cooking staff" and the other occupation types.
+
+## Conclusion (Poisson Model)
+While there existed 2 count variables within our existing dataset (cnt_fam_members and cnt_children), predicting these variables served no practical purpose within the scope of our project. As the dependent variable in this case is correlated with the response variable from our linear model, the final model produced supports that occupation_type plays some role in repaying loans within 60 days.
+
+# GLM Binomial Model
+For the GLM Binomial model we use the response variable proportion of good customers, customer_status_good, where we divided the customer status in the data set into good (1) and bad (0) customer count for credit-worthiness. We would expect amt_income_total to have the strongest impact on the response variable, which is related to credit-worthiness. We are also interested in seeing if variables such as age_years, work_years and cnt_children have a significant impact on the target variables.
+
+## Graphical Analysis
+```{r Visualization, message=FALSE}
+pairs(customer_status_good ~ amt_income_total + code_gender + age_years + work_years + name_education_type + name_housing_type + cnt_children + occupation_type + flag_own_realty,
+      data = df.cc,
+      upper.panel = panel.smooth)
+```
+The graphical analysis indicates that the predictors have almost no effect on our dependent variable. Some of the variables seem to show interaction.
+
+## Fit Binomial Models
+We try to fit simple models with the continuous variables amt_income_total, age_years, work_years and cnt_children.
+```{r simple models, include=FALSE, message=FALSE}
+glm.binom1 <- glm(cbind(cnt_status_good, cnt_status_bad) ~ amt_income_total,
+               family = "binomial",
+               data = df.cc)
+summary(glm.binom1)
+
+glm.binom2 <- update(glm.binom1, .~. + age_years,
+                     family = "binomial",
+                     data = df.cc)
+summary(glm.binom2)
+```
+
+```{r simple model with all continuous veriables, message=FALSE}
+glm.binom3 <- update(glm.binom2, .~. + work_years + cnt_children,
+                     family = "binomial",
+                     data = df.cc)
+summary(glm.binom3)
+exp(coef(glm.binom3)["amt_income_total"])
+ilogit(coef(glm.binom3)["amt_income_total"])
+```
+
+```{r simple model with all continuous veriables - interaction, include=FALSE, message=FALSE}
+glm.binom.int <- glm(cbind(cnt_status_good, cnt_status_bad) ~ amt_income_total * age_years * work_years * cnt_children,
+               family = "binomial",
+               data = df.cc)
+summary(glm.binom.int)
+exp(coef(glm.binom.int)["amt_income_total"])
+ilogit(coef(glm.binom.int)["amt_income_total"])
+```
+Only the predictor amt_income_total seems to play a significant role. The output indicates that if we were to increase this variable by one unit, we could expect an increase of the proportion of good customers also by almost 1.
+
+When interaction between the selected variables is included, it is interesting to see that it plays in some cases a significant role. Also the pairs plot shows interaction between different variables (model not shown).
+
+If the categorical variable occupation_type is added to income, income is no longer significant as a predictor, but occupation_type itself shows a significant p-value (checked with drop1).
+```{r adding categorical variables, include=FALSE, message=FALSE}
+glm.binom4 <- glm(cbind(cnt_status_good, cnt_status_bad) ~ amt_income_total + occupation_type,
+               family = "binomial",
+               data = df.cc)
+summary(glm.binom4)
+drop1(glm.binom4, test = "F")
+```
+
+## Visualization of the results
+We plot the actual observations (blue dots) along with the predicted values for a sequence of 100 incomes that range from 27,000 to 1.5 mio.
+```{r Visualization of the results, echo=FALSE, message=FALSE}
+good_customer_rate <- as.numeric(df.cc$cnt_status_good)/ (as.numeric(df.cc$cnt_status_good)+as.numeric(df.cc$cnt_status_bad))
+
+new.data = data.frame(amt_income_total = seq(27000, 1500000, length.out = 100))
+new.data$pred.good <- predict(glm.binom1, newdata = new.data,
+                                 type = "response")
+##
+ggplot(data = df.cc,
+       mapping = aes(y = good_customer_rate,
+                     x = amt_income_total)) + 
+  ylim(0,1) +
+  geom_hline(yintercept = 0:1, col = "gray") +
+  ##
+  ## predictions for amt_income_total
+  geom_point(data = new.data,
+               mapping = aes(
+      y = pred.good,
+      x = amt_income_total)) +
+  ##
+  ## actual observations
+  geom_point(col = "blue", 
+             size = 1)
+```
+For the GLM binomial model, there is slight evidence that the predictors have an influence. When visualizing the results we can see that we have very few observations at the upper end of the amt_income_total scale. This makes us doubt the validity of the results. Interestingly, the predicted variables show a downward trend, although the observations with the highest income are between 75% and 100% of the dependent variable good_customer_rate.
+
+## Conclusion (Binomial Model)
+In this model, we mainly concentrated on the continuous variables to see if their relevance for the new response variable was relevant. Our findings showed that this was not true for all but the amt_income_total variable.
+
+# GAM Model
+For the GAM model we use the response variable percent_good, which is the percentage of good customers in our data. 
+Note: graphical analysis not repeated as this response variable was used in the linear model as well. 
+
+## Fit GAM Models
+We start again with a basic model in which amt_income_total is the predictor. The p-value for amt_income_total is not significant. We try a few models with more variables and show only the summary output for the most complex model.
+```{r GAM 1, include=FALSE, message=FALSE}
+gam.cc.1 <- gam(percent_good ~ s(amt_income_total),
+                data = df.cc)
+summary(gam.cc.1)
+plot(gam.cc.1, residuals = TRUE, cex = 2)
+```
+
+```{r GAM 2, include=FALSE, message=FALSE}
+gam.cc.2 <- update(gam.cc.1, . ~ . + occupation_type + s(age_years))
+summary(gam.cc.2)
+```
+
+```{r GAM complex model, message=FALSE}
+gam.cc.3 <- update(gam.cc.2, . ~ . + s(work_years) + flag_own_realty + cnt_children)
+summary(gam.cc.3)
+```
+Here, we see that the edf of the smooth terms amt_income_total and age_years are 1, which mean that the effect on the response variable should be linear. For the smooth term work_years the edf is higher than 4 indicating that the effect on the response variable is a more complex polynomial. The p-values of all smooth terms show no significance, and tell us that there is no evidence that the effect differs from zero.  
+  
+Parametric terms: Occupation_types shows significance for some of its levels. The same applies to level Y for the variable flag_own_reality.
+
+## Visualization smooth terms
+If the smooth terms were significant, i.e. whether a higher level of complexity is required, it would be evident in the visualization, so we present the smooth terms here to confirm our findings from the summary out above. 
+```{r Visualization of the smooth terms, echo=FALSE, message=FALSE}
+par(mfrow = c(1,3))
+plot(gam.cc.3, residuals = TRUE, cex = 2)
+```
+
+## Cross Validation
+Here we perform cross-validation on the GAM models using a 10-fold cross-validation approach. The R^2 value was calculated for each model during each run to compare the mean value for the three models. 
+```{r gam-cv, message=FALSE}
+set.seed(101)
+folds <- createFolds(df.cc$percent_good, k = 10)
+
+r.squared.results.gam <- lapply (folds, function(x){
+  df.cc.train <- df.cc[-x, ]
+  df.cc.test <- df.cc[x, ]
+  
+  #gam.cc.1
+  gam.cc.1.train <- gam(formula = formula(gam.cc.1), data = df.cc.train)
+  predict.gam.cc.1.test <- predict(gam.cc.1.train, newdata = df.cc.test)
+  r.squared.gam.cc.1 <- cor(predict.gam.cc.1.test, df.cc.test$percent_good)^2
+  
+  # gam.cc.2
+  gam.cc.2.train <- gam(formula = formula(gam.cc.2), data = df.cc.train)
+  predict.gam.cc.2.test <- predict(gam.cc.2.train, newdata = df.cc.test)
+  r.squared.gam.cc.2 <- cor(predict.gam.cc.2.test, df.cc.test$percent_good)^2
+  
+  # gam.cc.3
+  gam.cc.3.train <- gam(formula = formula(gam.cc.3), data = df.cc.train)
+  predict.gam.cc.3.test <- predict(gam.cc.3.train, newdata = df.cc.test)
+  r.squared.gam.cc.3 <- cor(predict.gam.cc.3.test, df.cc.test$percent_good)^2
+  
+
+  return(c(r.squared.gam.cc.1, r.squared.gam.cc.2, r.squared.gam.cc.3))
+})
+```
+
+```{r Comparison of the R squared, echo=FALSE, message=FALSE}
+df.r.squared.gam <- data.table::transpose(data.frame(r.squared.results.gam))
+colnames(df.r.squared.gam) <- c("gam.cc.1", "gam.cc.2", "gam.cc.3")
+rownames(df.r.squared.gam) <- colnames(data.frame(r.squared.results.gam))
+
+mean.table <- c(mean(df.r.squared.gam$gam.1), mean(df.r.squared.gam$gam.2), mean(df.r.squared.gam$gam.3))
+names(mean.table) <- c("gam.cc.1", "gam.cc.2", "gam.cc.3")
+mean.table
+```
+When we calculate the mean of the R^2 values produced by the 10-fold cross-validation, we can see that gam.cc.3 has the highest mean R^2, suggesting this best explains the data. 
+
+```{r Visualization of the R squared, echo=FALSE, message=FALSE}
+boxplot(df.r.squared.gam)
+```
+The boxplot shows us that the gam.cc.3 model also has the greatest spread, indicating that the R^2 value is not as reliable. We can also see that the R^2 of the simplest model with the smooth term amt_income_total has the highest median and the lowest spread.  
+  
+When we compare the adjusted R^2 from the summary outputs, to include the complexity of the models, it shows that the most complex model has the highest value. Ultimately, we would still tend to use the simpler model, as it contains far fewer variables and the mean values of the R^2 do not differ a lot between all models. Overall, it should be noted that R^2, respectively adjusted R^2, for all models are very low suggesting very limited predictive power.
+
+## Conclusion (GAM Model)
+We wanted to do cross validation on the GAM Model since we believe that this model is sensitive to overfitting due to its flexibility. However we are unsure in our case, if R^2 and adjusted R^2 was the right choice for measuring the goodness of fit.
+
+# Support Vector Machine
+In the following chapter, a Support Vector Machine is used to predict whether a customer is a good 
+or bad customer. Here we use again the definition that a good customer repays loans more than 50% of the time within 60 days.
+
+## Graphical Analysis
+To first get an overview of potentially good predictor combinations (e.g. where we can see a 
+threshold between good and bad customers), we plot different predictors against the response variable customer_status_good. 
+Note: we include only two plots for simplicity.
+```{r analysis-svm, echo=FALSE, warning=FALSE, message=FALSE}
+# work with copy of df.cc
+df.svm <- cbind(df.cc)
+
+# first try
+ggplot1 <- ggplot(data = df.svm, aes(x = work_years, y = amt_income_total, color = customer_status_good)) +
+geom_point()+
+labs(title="Income vs. Working Years")+ theme(legend.position = "none")
+
+# second try
+ggplot2 <- ggplot(data = df.svm, aes(x = flag_own_realty, y = amt_income_total, color = customer_status_good)) +
+geom_point()+
+labs(title="Income vs. flag_own_realty ")+ theme(legend.position = "none")
+
+
+# third try
+ggplot3 <- ggplot(data = df.svm, aes(x = name_education_type, y = amt_income_total, color = customer_status_good)) +
+geom_point()+
+labs(title="Income vs. name_education_type ")+ theme(axis.text.x = element_text(angle = 90))
+
+grid.arrange(ggplot1, ggplot2, ncol=2)
+```
+The graphical analysis does not show clear thresholds from different predictor variables for customer_status_good.
+
+## Data Preparation
+Since the SVM method cannot handle categorical variables directly, these are transformed to dummy variables:
+```{r svm preparation,echo=TRUE, warning=FALSE, message=FALSE}
+set.seed(2323)
+
+# gender
+df.svm$dm_male <- ifelse(df.cc$code_gender == 'M', 1, 0)
+df.svm$dm_male <- as.factor(df.svm$dm_male)
+
+# education
+df.svm <- dummy_cols(df.svm, select_columns = 'name_education_type')
+df.svm$`name_education_type_Lower secondary` <- as.factor(df.svm$`name_education_type_Lower secondary`)
+df.svm$`name_education_type_Secondary / secondary special` <- as.factor(df.svm$`name_education_type_Secondary / secondary special`)
+df.svm$`name_education_type_Higher education` <- as.factor(df.svm$`name_education_type_Higher education`)
+df.svm$`name_education_type_Incomplete higher` <- as.factor(df.svm$`name_education_type_Incomplete higher`)
+
+# income type
+df.svm <- dummy_cols(df.svm, select_columns = 'name_income_type')
+df.svm$`name_income_type_Commercial associate` <- as.factor(df.svm$`name_income_type_Commercial associate`)
+df.svm$name_income_type_Pensioner <- as.factor(df.svm$name_income_type_Pensioner)
+df.svm$`name_income_type_State servant` <- as.factor(df.svm$`name_income_type_State servant`)
+df.svm$name_income_type_Student <- as.factor(df.svm$name_income_type_Student)
+df.svm$name_income_type_Working <- as.factor(df.svm$name_income_type_Working)
+
+```
+
+## Fit SVM Models
+For making predictions, we split the data. We use 70% of the data to train the SVM. Using (almost) all potential predictors, we get an accuracy of around 83.8%. To see if we get better results, we reduce the number of predictors. For example:
+```{r,echo=FALSE,warning=FALSE, message=FALSE}
+# chose variables for SVM
+df.svm.var <-df.svm[,c("customer_status_good",
+                       "amt_income_total",
+                       "flag_own_realty",
+                       "name_education_type_Lower secondary",
+                       "name_education_type_Secondary / secondary special",
+                       "name_education_type_Higher education",
+                       "name_education_type_Incomplete higher",
+                       "name_income_type_Commercial associate",
+                       "name_income_type_Pensioner",
+                       "name_income_type_State servant",
+                       "name_income_type_Student",
+                       "name_income_type_Working",
+                       "cnt_children",
+                       "age_years",
+                       "dm_male",
+                       "work_years")]
+
+# split data into train and test data sets
+set.seed(123)
+indices <- createDataPartition(df.svm.var$customer_status_good, p=.70, list = F)
+
+# train data
+train <- df.svm.var %>%
+slice(indices)
+
+# test data
+test_in <- df.svm.var %>%
+slice(-indices) %>%
+dplyr::select(-customer_status_good)
+
+test_truth <- df.svm.var %>%
+slice(-indices) %>%
+pull(customer_status_good)
+```
+
+```{r svm, echo=FALSE, warning=FALSE, message=FALSE}
+
+# create SVM
+test_svm <- svm(customer_status_good ~ amt_income_total + flag_own_realty + age_years + work_years,
+                train,
+                scale = TRUE,
+                cost = 10)
+test_svm
+```
+
+```{r predict_confuse, echo=FALSE, warning=FALSE, message=FALSE, include=TRUE}
+test_pred <- predict(test_svm, test_in)
+conf_matrix <- confusionMatrix(test_pred, test_truth)
+conf_matrix
+```
+
+With only four predictors, we get the same result as the model that included all predictors. No matter which combination was used for the model, we were unable to produce a significantly better accuracy for our predictions.  
+
+Below, we show a sample of the tested combinations and their respective predictive accuracy:
+```{r, echo=FALSE, include=TRUE}
+Predictors <- c('amt_income_total ', 'amt_income_total + flag_own_realty','amt_income_total + dm_edu_higher',
+                'amt_income_total + work_years + dm_male', 'amt_income_total + flag_own_realty + age_years + work_years')
+Accuracy <- c('0.832', '0.838','0.828', '0.801','0.838')
+table <- data.frame(Predictors, Accuracy)
+table
+```
+
+What is evident from this table is that using only a single predictor (amt_income_total), we are able to achieve a similar level of accuracy to the model with all predictors included.
+
+## Conclusion (SVM)
+The accuracy of 83.8% is not just a random percentage number, it is close to the percentage of the good customers in the prediction-testing set. The predictors are too weak, to differentiate between good and bad customers, or in other words: good and bad customers are to well spread over the different predictors, which can be seen graphically:
+This can be easily seen graphically:
+
+```{r svm-plot, echo=FALSE}
+plot(test_svm, train, amt_income_total ~ work_years)
+```
+The SVM sees only potential good customers and cannot distinguish from bad customers. The available predictors don't correspond well to the response variable, therefore an SVM model with the predictors at hand is not a good choice.
+
+# Neural Networks
+## Build the network
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE, include=TRUE}
+set.seed(1400)
+# Work with copy of df.cc
+df.ann <- cbind(df.cc)
+# Standardize
+df.ann$log_amt_income_total <- log(df.ann$amt_income_total)
+## Only get needed columns for model
+keeps <- c(
+          "customer_status_good"
+          ,"code_gender"
+          ,"age_years"
+          ,"name_education_type"
+          ,"name_income_type"
+          ,"name_housing_type"
+          ,"name_family_status"
+           ,"cnt_fam_members"
+          ,"flag_own_car"
+          ,"flag_own_realty"
+          , "log_amt_income_total"
+          ,"occupation_type"
+           )
+df.ann <- df.ann[keeps]
+# Split data into train and test data sets
+intrain <- createDataPartition(y = df.ann$customer_status_good,
+                               p=0.65,
+                               list = FALSE)
+df.ann.training <- df.ann[intrain,]
+df.ann.testing <- df.ann[-intrain,]
+# Fit model
+df.ann.net <- nnet(customer_status_good ~ ., data = df.ann.training, size=15, maxit=500, range=0.1, decay=5e-4, MaxNWts = 10000, trace = FALSE)
+```
+
+The model is designed as 41-15-1 network with 646 weights. 11 predictors were added to the model, but it works in total with 41 predictors as some of the variables are factors, which will be converted to dummy variables (0/1 values).
+
+## Make Predictions
+```{r}
+pred <- predict(df.ann.net, df.ann.testing, type="class")
+cm_nn <- table(pred=pred, true=df.ann.testing$customer_status_good)
+cm_nn
+```
+
+Calculating the accuracy
+
+```{r}
+sum(diag(cm_nn))/sum(sum(cm_nn))
+```
+
+Percentage of identified 'bad' customers
+
+```{r}
+cm_nn[1, 1]/(cm_nn[1, 1] + cm_nn[2, 1])
+```
+
+The accuracy indicates a good score (`r sum(diag(cm_nn))/sum(sum(cm_nn))`). Simply predicting all customers as good customers would lead to a even higher accuracy (approx. 0.84).  
+
+In contrast, the model has difficulty identifying bad customers. It falsely identifies `r cm_nn[1, 1] + cm_nn[1, 2]` bad customers, despite most of them in fact are good customers. Out of the `r cm_nn[1, 1] + cm_nn[2, 1]` 'real' bad customers  the model identifies only `r cm_nn[1, 1]`.
+
+## Tuning the neurons
+This function helps to tune the number of neurons for the model. 
+```{r echo=TRUE, error=FALSE, message=FALSE, warning=FALSE, include=TRUE}
+# Tune nnet with function for different size of neurons
+x <- c()
+for (i in 1:25) {
+  df.ann.net <- nnet(customer_status_good ~ ., data = df.ann.training, size=i, maxit=100, range=0.1, decay=5e-4, MaxNWts = 10000, trace = FALSE)
+  pred <- predict(df.ann.net, df.ann.testing, type="class")
+  cm_nn <- table(pred=pred, true=df.ann.testing$customer_status_good)
+  s <- sum(diag(cm_nn))/sum(sum(cm_nn))
+  x <- append(x, s)
+}
+plot(x, main="Tune nnet - Count of Neurons", ylab= "Accuracy", xlab = "Count of Neurons")
+```
+However, we can see that there is no model that gives a high accuracy and is able to identify bad customers well.
+
+## Importance of the predictors
+This table shows the importance of the different predictors (list of top 10 out of 41).
+```{r}
+df.ann.net.imp <- varImp(df.ann.net)
+df.ann.net.imp <- df.ann.net.imp[order(-df.ann.net.imp$Overall),, drop = FALSE]
+head(df.ann.net.imp, 10)
+```
+This output should not be overinterpreted as the model itself is not suitable to identify bad customers.
+
+## Conclusion (Neural Networks)
+The research team invested a lot of time to find models, neural network designs and tuning techniques, which are stable and could increase the accuracy over 84% (which is equal to the share of good customers). Such a model could not be found. While neural networks are flexible with many variants and generally are able to find complex patterns, this was not the case with our dataset (especially predictors).
+
+Another question, which the analysis was unable to answer, was the definition of a "good" accuracy. The client could already benefit by finding a few "true" bad customers. A good customer would repay loans including interest rate and on the other hand the company would lose a lot of money if a bad customer is unable to repay the loan. It could make sense not to rely only on accuracy in this case and focus on identifying bad customers instead.
+
+Lastly, the practical implementation of the model needs to be discussed. The model would help to identify potential "bad customers" already at the application process and allow the company to decline applicants before a credit card is issued. On the other hand, using "black box" methods like neural networks is not always suitable for such a decision process. The company would not be able to give reasons why the application of a customer was denied. 
+
+# Optimization
+The distinction between good and bad customers is a way to build up a relatively safe portfolio of customers, who repay their debts with interest. However, the defined threshold leaves room for optimization.  
+  
+Potential options to increase earnings through optimization include:  
+  
+<b>1. Granting credit cards to a percentage of "bad" applicants</b> <br>
+This adds a marginally higher risk to the portfolio of credit card customers, however, comes with higher possible returns.  
+  
+<b> 2. Allocating credit limits  </b> <br>
+Determining the credit limit to allow an applicant/customer based on their likelihood to repay (i.e. "percent_good") in order to maximize interest paid, thereby increasing earnings.  
+  
+<b> 3. Dunning</b> <br>
+It is lucrative for credit card companies when customers do not immediately repay the loan amounts they borrow. Depending on the agreed contract, the companies can claim additional fees and penalty interest from a certain point. The dunning system should take this into account and not dun the customer too early or the full amount as overdue. However, it should be noted that the later the reminder is issued, the greater the likelihood of a credit default (untested assumption). It is therefore appropriate to demand regular partial payments.
+
+To optimize (maximize) the profit of a credit card company the following <b>simplified</b> formular could be applied:
+
+<b>Maximize $g(x,y) =$ “loan amount” $\cdot$ “interest rate” $\cdot \frac{x}{360} +$ “additional fees” $–$ “loan amount” $\cdot$ “probability of default”$(x,y)$</b>
+
+Control variables: <br>
+$x =$ days until dunning letter will be sent<br>
+$y =$ amount of partial payment
+
+Probability of default is another function based on $x$ and $y$. The higher the value of $x$ and the lower the value of $y$, it can be assumed that the probability of default will be increased.
+
+# Final Conclusions
+In the following table you can find a overview over all used methods, the model used and the respective performance.
+A detailed conclusion can be found after every model-chapter.
+
+```{r conclusion, echo=FALSE, include=TRUE}
+Method <- c('LM','GLM-Poisson (quasi-poisson)','GLM-Binomial','GAM','SVM','ANN')
+
+`Dependent variable` <- c('percent_good', 
+                          'cnt_status_good',
+                          'proportion of customer_status_good', 
+                          'percent_good',
+                          'customer_status_good', 
+                          'customer_status_good')
+
+Predictors <- c('occupation_type',
+                'occupation_type', 
+                'amt_income_total', 
+                'amt_income_total',
+                'amt_income_total + flag_own_realty',
+                'gender+age+education+income_type+housing+family_status+cnt_fam_members+own_car+own_realty+log_amt_income_total+occupation_type')
+
+`Measure of fit` <- c('R^2 and adjusted R^2', 
+                      'p-value using anova(fit1, fit2)', 
+                      'N/A', 
+                      'R^2 and adjusted R^2', 
+                      'Accuracy: 83.8%', 
+                      'Accuracy: 81.4%')
+
+table <- data.frame(Method, `Dependent variable`, Predictors, `Measure of fit`)
+table %>% kable()
+```
+
+Personal note:
+Initially, we had high expectations of the data set and the outcome of our models. However, reality hits you hard sometimes. Two things we would like to mention here:  
+- Data preparation: A great deal of discussion went into deciding on our data set and coming up with response variables. In some cases, this required transforming the source data into a form that met the needs of the various methods and maintained a consistent goal, "credit-worthiness". Some research into possible ways to define what a bad customer looks like was needed and altering this could change the outcome of our models drastically.  
+- Data set: Looking back, we would choose a data set with fewer categorical. Generally speaking, we found it more challenging to work with categorical variables in some models, but much easier in others.  
+
+# Session Information
+```{r session-info}
+sessionInfo()
+```
+
