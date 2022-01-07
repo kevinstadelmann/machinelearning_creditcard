@@ -1184,7 +1184,6 @@ Initially, we had high expectations of the data set and the outcome of our model
 - Data preparation: A great deal of discussion went into deciding on our data set and coming up with response variables. In some cases, this required transforming the source data into a form that met the needs of the various methods and maintained a consistent goal, "credit-worthiness". Some research into possible ways to define what a bad customer looks like was needed and altering this could change the outcome of our models drastically.
 - Data set: Looking back, we would choose a data set with fewer categorical. Generally speaking, we found it more challenging to work with categorical variables in some models, but much easier in others.
 
-
 # Session Information
 ```{r session-info}
 sessionInfo()
