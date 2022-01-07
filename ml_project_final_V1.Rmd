@@ -42,7 +42,6 @@ library(ROCR)
 library(nnet)
 library(mgcv)
 library(splitTools)
-library(performance)
 library(faraway)
 #library(multcomp) #Note: this package is needed in GLM Poisson Model contrast testing and is loaded there as it causes errors with use of the dplyr select() function
 
@@ -947,11 +946,14 @@ r.squared.results.gam <- lapply (folds, function(x){
 ```
 
 ```{r Visualization of the R squared, echo=FALSE, message=FALSE}
-df.r.squared.gam <- transpose(data.frame(r.squared.results.gam))
-colnames(df.r.squared.gam) <- c("gam.1", "gam.2", "gam.3")
-rownames(df.r.squared.gam) <- colnames(data.frame(r.squared.results.gam))
+#df.r.squared.gam <- transpose(data.frame(r.squared.results.gam))
+#colnames(df.r.squared.gam) <- c("gam.1", "gam.2", "gam.3")
+#rownames(df.r.squared.gam) <- colnames(data.frame(r.squared.results.gam))
 
-boxplot(df.r.squared.gam)
+#boxplot(df.r.squared.gam)
+#The boxplots are displayed from a picture, since the above code throws errors
+#when kniterin it
+knitr::include_graphics("boxplot_gam.png")
 ```
 Overall, it should be noted that R squared is very low suggesting very limited predictive power of these models.
 
@@ -1171,10 +1173,6 @@ Percentage of identified 'bad' customers
 cm_nn[1, 1]/(cm_nn[1, 1] + cm_nn[2, 1])
 ```
 
-```{r}
-cm_nn[1, 1] + cm_nn[2, 1]
-```
-
 
 The accuracy indicates a good score (`r sum(diag(cm_nn))/sum(sum(cm_nn))`). However, simply predict all customers as good customers would lead to a even higher accurary (approx. 0.84). The model has issues to identify bad customers. It identifies `r cm_nn[1, 1] + cm_nn[1, 2]` bad customers, but most of them are in fact good customers. Out of the `r cm_nn[1, 1] + cm_nn[2, 1]` 'real' bad customers  the model identifies only `r cm_nn[1, 1]`.
 
@@ -1202,6 +1200,14 @@ head(df.ann.net.imp, 10)
 ```
 
 This table shows the importance of the different predictors (list of top 10 out of 41). This output should not be overinterpreted as the model itself is not suitable to identify bad customers.
+
+## Conclusion Neural Networks
+
+The research team invested a lot of time to find models, neural network designs and tuning techniques, which is stable and can increase the accuracy over the 84% (which is equal to the share of good customers). Such a model could not be found. Neural networks are flexible and with many variants. They would be able to find complex patterns, but it was not the case with data (especially predictors) received from the client.
+
+Another question, which the analysis cannot answer, is the definition of a "good" accuracy. The client could already benefit by finding a few "true" bad customers. A good customer will pay back the borrowed amount including interest rate and on the other hand the company will loose a lot of money if a bad customer is not able to pay the loan. It could make sense not to rely only on accuracy in this case and focus on identifying bad customers instead.
+
+Lastly, the practical implementation of the model needs to be discussed. The model will help to identify "potential bad customers" already at the application process and the company would able to decline such a customer before a credit card is issued. On the other hand, using "black box" methods like neural networks is not always suitable for such a decision process. The company would not be able to give reasons, why the application of a customer was denied. 
 
 # Optimization
 The distinction between good and bad customer is a way to build up a relatively safe portfolio of customers, who repay their debts with the interest. However, the defined threshold leaves room for optimization.  
