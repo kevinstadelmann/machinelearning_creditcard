@@ -200,7 +200,7 @@ str(df.cc)
 head(df.cc) %>% kable()
 ```
 
-# Model 1: Linear Model
+# Linear Model
 The scope of this analysis is to be able to predict the percentage of times that an individual pays off their credit balance within 60 days.
 
 Note: while our dataset includes the continuous variable amt_income_total, which was initially chosen as the dependent variable for this method (and is possibly a more natural prediction based on the demographic data available in our dataset), we ultimately decided on percent_good due to it's more practical usage and tie-in to the other methods used here.
@@ -578,7 +578,6 @@ Comparing the in-sample R^2 values with the outer-sample R^2 values, we see that
 It was interesting to see that the majority of boxplots differed only in spread and not the median. This made it challenging to find and determine variables that would make good predictors for our chosen response variable, percent_good. With the number of variables in our dataset, a lot of time was spent in graphical analysis in an effort to narrow down the potential influencers. The analysis in this work has shown that demographic variables are, in this case, weak predictors of loan repayment.
 
 # GLM (Poisson)
-
 Here we wish to predict the count of "good status", which counts the number of times where loans are repayed within 60 days (i.e. status = 0, 1, or C). In practice, it could be beneficial to predict different repayment statuses in order to find the right balance of interest repayed to optimize earnings.  
   
 First we check our response variable cnt_status_good and see that it is not in the form of a bell curve (normal distribution), indicating that a normal Linear Model is not appropriate.
@@ -744,65 +743,15 @@ This confirms the hypothesis from the graphical analysis, that there is a slight
 While there existed 2 count variables within our existing dataset (cnt_fam_members and cnt_children), predicting these variables served no practical purpose within the scope of our project. As the dependent variable in this case is correlated with the response variable from our linear model, the final model produced supports that occupation_type plays some role in repaying loans within 60 days.
 
 # GLM Binomial
+For the GLM Binomial model we use the response variable proportion of good customers. Therefore we divide the customer status in the data set into good (1) and bad (0) customer count for creditworthiness. We would expect amt_income_total to have the strongest impact on the response variable, which is related to creditworthiness. We are also interested in seeing if variables such as age_years, work_years and cnt_children have a significant impact on the target variables.
 
-## Graphical Analysis 
-We would expect amt_income_total to have the strongest impact on percent_good or customer_status_good, respectively creditworthiness. We are also interested in seeing if variables such as code_gender, work_years, age_years, and name_education_type have a significant impact on the target variables.
-
-## Overview of all the different variables
-To have a first overview of the expected most important variables (percent_good, amt_income_total, code_gender, age_years, work_years), we plot them with ggpairs. After the first plot, we realize that gender does not make a significant difference for our target variable. Later on we can confirm this observation. This is why we show the plots with cnt_children and flag_own_realty instead. Since our dataset consists of many categorical variables, we additionally adjust the argument color in each further plot with one of this variables.
-```{r ggpairs expected most important variables 1, include=FALSE, message=FALSE}
-# colors for the different genders
-ggpairs(data = df.cc, legend = 1,
-        columns = c("percent_good", "amt_income_total", "cnt_children", "age_years", "work_years"),
-        proportions = "auto",
-        mapping = aes(color = code_gender, alpha = 0.5)) +
-  
-  theme(legend.position = "bottom",
-        legend.title=element_text(size=9),
-        legend.text=element_text(size=7.5))
-
-# colors for the different income types plus flag_own_realty
-ggpairs(data = df.cc, legend = 1,
-        columns = c("percent_good", "amt_income_total", "flag_own_realty", "age_years", "work_years"),
-        proportions = "auto",
-        mapping = aes(color = name_income_type, alpha = 0.5)) +
-  
-  theme(legend.position = "bottom",
-        legend.title=element_text(size=9),
-        legend.text=element_text(size=7.5))
-```
-
-```{r ggpairs expected most important variables 2, echo=FALSE, message=FALSE}
-# colors for the different education types
-ggpairs(data = df.cc, legend = 1,
-        columns = c("percent_good", "amt_income_total", "cnt_children", "age_years", "work_years"),
-        proportions = "auto",
-        mapping = aes(color = name_education_type, alpha = 0.5)) +
-  
-  theme(legend.position = "bottom",
-        legend.title=element_text(size=9),
-        legend.text=element_text(size=7.5))
-
-# colors for the different housing types
-ggpairs(data = df.cc, legend = 1,
-        columns = c("percent_good", "amt_income_total", "flag_own_realty", "age_years", "work_years"),
-        proportions = "auto",
-        mapping = aes(color = name_housing_type, alpha = 0.5)) +
-  
-  theme(legend.position = "bottom",
-        legend.title=element_text(size=9),
-        legend.text=element_text(size=7.5))
-#### missing plot occupation_type - too many levels
-```
-
-For the GLM Binomial model we use the response variable proportion of good customers. Therefore we divide the customer status in the data set into good (1) and bad (0) customer count for creditworthiness.
-
+## Graphical Analysis
 ```{r Visualization, message=FALSE}
 pairs(customer_status_good ~ amt_income_total + code_gender + age_years + work_years + name_education_type + name_housing_type + cnt_children + occupation_type + flag_own_realty,
       data = df.cc,
       upper.panel = panel.smooth)
 ```
-The graphical analysis indicates that the predictors have almost no effect on our dependent variable.
+The graphical analysis indicates that the predictors have almost no effect on our dependent variable. Some of the variables seem to show interaction.
 
 ## Binomial Models
 We try to fit simple models with the continuous variables amt_income_total, age_years, work_years and cnt_children.
