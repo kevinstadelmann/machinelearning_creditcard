@@ -1179,6 +1179,14 @@ table <- data.frame(Method, `Dependent variable`, Predictors, `Measure of fit`)
 table %>% kable()
 ```
 
+Overall, the following predictors were to a certain point useful:
+- amt_income_total
+- flag_own_reality
+- name_income_type
+
+For further predictions attempts, we highly suggest to look for stronger predictor
+variables.
+
 Personal note:
 
 Initially, we had high expectations of the data set and the outcome of our models. However, reality hits you hard sometimes. Two things we would like to mention here:
