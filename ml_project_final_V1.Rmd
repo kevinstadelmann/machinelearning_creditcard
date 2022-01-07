@@ -1245,7 +1245,7 @@ Predictors <- c('occupation_type','occupation_type (quasi-poisson)','','','amt_i
 `Measure of fit` <- c('R^2 and adjusted R^2', 'p-value using anova(fit1, fit2)', '', '', 'Accuracy: 83.8%', 'Accuracy: 81.4%')
 
 table <- data.frame(Method, `Dependent variable`, Predictors, `Measure of fit`)
-table
+table %>% kable()
 ```
 
 Personal note:
