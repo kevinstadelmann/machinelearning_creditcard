@@ -796,6 +796,8 @@ drop1(glm.binom4, test = "F")
 ```
 
 ## Visualization of the results
+To visualize the results we calculated "good_customer_rate" which is the proportion of good customers, i.e. cnt_status_good divided by total of all statuses.  
+  
 We plot the actual observations (blue dots) along with the predicted values for a sequence of 100 incomes that range from 27,000 to 1.5 mio.
 ```{r Visualization of the results, echo=FALSE, message=FALSE}
 good_customer_rate <- as.numeric(df.cc$cnt_status_good)/ (as.numeric(df.cc$cnt_status_good)+as.numeric(df.cc$cnt_status_bad))
